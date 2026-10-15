@@ -10,17 +10,17 @@ inputs:
     required: false
     default: ''
   target:
-    description: WCAG 2 level, AA or AAA.
+    description: WCAG 2 level, AA or AAA. Default the "target" in colorcheck.json, else AA.
     required: false
-    default: AA
+    default: ''
   url:
     description: Optional. A page to load in headless Chrome and check as it is drawn, such as a preview deployment or a local server started earlier in the job.
     required: false
     default: ''
   fail-on:
-    description: fail (failing pairs fail the step), warn (look-alike colors too) or none.
+    description: fail (failing pairs fail the step), warn (look-alike colors too) or none. Default the "failOn" in colorcheck.json, else fail.
     required: false
-    default: fail
+    default: ''
   config:
     description: Settings file. Default colorcheck.json when it exists.
     required: false
@@ -62,7 +62,11 @@ runs:
         CLI="$GITHUB_ACTION_PATH/dist/everyhexcode.js"
         FLAGS=""
         [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ] && FLAGS="--experimental-websocket"
-        ARGS=(--target "$INPUT_TARGET" --fail-on "$INPUT_FAIL_ON" --format github)
+        # an input left empty leaves the setting to colorcheck.json (and the CLI's own default)
+        COMMON=()
+        [ -n "$INPUT_TARGET" ] && COMMON+=(--target "$INPUT_TARGET")
+        [ -n "$INPUT_FAIL_ON" ] && COMMON+=(--fail-on "$INPUT_FAIL_ON")
+        ARGS=("${COMMON[@]}" --format github)
         [ -n "$INPUT_CONFIG" ] && ARGS+=(--config "$INPUT_CONFIG")
         [ -n "$INPUT_LOCK" ] && ARGS+=(--lock "$INPUT_LOCK")
         [ -n "$INPUT_SARIF" ] && ARGS+=(--sarif "$INPUT_SARIF")
@@ -70,7 +74,8 @@ runs:
         node $FLAGS "$CLI" check "${FILES[@]}" "${ARGS[@]}"
         code=$?
         if [ -n "$INPUT_URL" ]; then
-          SCAN=(--target "$INPUT_TARGET" --fail-on "$INPUT_FAIL_ON" --format github)
+          SCAN=("${COMMON[@]}" --format github)
+          [ -n "$INPUT_CONFIG" ] && SCAN+=(--config "$INPUT_CONFIG")
           [ -n "$INPUT_SARIF" ] && SCAN+=(--sarif "${INPUT_SARIF%.sarif}-page.sarif")
           node $FLAGS "$CLI" scan "$INPUT_URL" "${SCAN[@]}"
           c2=$?
