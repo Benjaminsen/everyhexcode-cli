@@ -139,7 +139,10 @@ const hex = (c) => '#' + c.map((v) => Math.round(v).toString(16).padStart(2, '0'
 
 // Runs in the page: every visible element with its own text, its colour and the colours behind it. Colours are
 // normalised through a canvas, so oklch() and color() come back as rgb, alpha kept.
-const COLLECT = `(() => {
+// before reading: transitions end at once (a colour mid-fade is neither state), and scrolling jumps (scroll-behavior:
+// smooth would leave the page at the top and the rest unread)
+export const SETTLE = `if (!document.getElementById('ehc-settle')) { const st = document.createElement('style'); st.id = 'ehc-settle'; st.textContent = '*, *::before, *::after { transition-duration: 0s !important; transition-delay: 0s !important; } html, body { scroll-behavior: auto !important; }'; document.head.appendChild(st); }`;
+export const COLLECT = `(() => {
   // any CSS colour (rgb, oklch, color(), color-mix…) to sRGB 0-255 with alpha, by painting one pixel and reading it back
   const c1 = document.createElement('canvas'); c1.width = c1.height = 1;
   const cv = c1.getContext('2d', { willReadFrequently: true, colorSpace: 'srgb' });
@@ -174,9 +177,10 @@ const COLLECT = `(() => {
     const x = Math.min(innerWidth - 1, Math.max(0, r.left + Math.min(r.width / 2, 12))), y = Math.min(innerHeight - 1, Math.max(0, r.top + r.height / 2));
     // what lies under that spot, from the element itself downwards
     const stack = document.elementsFromPoint(x, y);
-    const from = stack.indexOf(el) >= 0 ? stack.indexOf(el) : 0;
+    // an element with pointer-events: none is not in that list: then it and the elements it sits in
+    const under = stack.includes(el) ? stack.slice(stack.indexOf(el)) : (() => { const l = []; for (let e = el; e; e = e.parentElement) l.push(e); return l; })();
     const layers = []; let image = false;
-    for (const e of stack.slice(from)) {
+    for (const e of under) {
       const s = getComputedStyle(e);
       if (s.backgroundImage && s.backgroundImage !== 'none') { image = true; break; }
       if (/^(IMG|VIDEO|CANVAS|SVG|PICTURE)$/i.test(e.tagName) && e !== el) { image = true; break; }
@@ -260,17 +264,19 @@ export async function renderScan(url, opts = {}) {
       const until = Date.now() + 60000;
       let shotsOk = true;
       for (let step = 0; step < 15; step++) {
-        const res = await evaluate(`scrollTo(0, ${step * 800}); ${COLLECT}`);
+        const res = await evaluate(`${SETTLE} scrollTo({ top: ${step * 800}, behavior: 'instant' }); ${COLLECT}`);
         if (res.exceptionDetails) throw new Error('The page could not be read: ' + (res.exceptionDetails.exception?.description || res.exceptionDetails.text));
         const got = res.result.value;
         finalUrl = got.url;
         items.push(...got.items);
-        // text over an image or gradient: hide the text, photograph the box, take the worst tenth of what is behind it
-        for (const it of got.items.filter((x) => x.image)) {
+        // text over an image or gradient: photograph the box, take the worst tenth of what is behind it. All text on the
+        // page is hidden for the shots: the box around wrapped text also holds the text beside it
+        const shots = got.items.filter((x) => x.image);
+        if (shots.length) await cdp.send('Runtime.evaluate', { expression: `(() => { const st = document.createElement('style'); st.id = 'ehc-notext'; st.textContent = '*, *::before, *::after { color: transparent !important; -webkit-text-fill-color: transparent !important; text-shadow: none !important; text-decoration-color: transparent !important; caret-color: transparent !important; transition: none !important; }'; document.head.appendChild(st); return new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(ok))); })()`, awaitPromise: true }, s);
+        for (const it of shots) {
           if (!shotsOk || over.length >= 60) break;
           if (Date.now() > until) { opts.log?.('Image sampling stopped after 60 s; the rest keep their composited background.'); shotsOk = false; break; }
           over.push(it);
-          await cdp.send('Runtime.evaluate', { expression: `(() => { const e = document.querySelector('[data-ehc-i="${it.i}"]'); if (e) { e.dataset.ehcColor = e.style.color; e.style.setProperty('color', 'transparent', 'important'); e.style.setProperty('text-shadow', 'none', 'important'); } })()` }, s);
           const [x, y, w, hh] = it.rect;
           try {
             const shot = await cdp.send('Page.captureScreenshot', { format: 'png', clip: { x: Math.max(0, x), y: Math.max(0, y), width: Math.max(1, Math.min(w, 600)), height: Math.max(1, Math.min(hh, 300)), scale: 1 } }, s, 8000);
@@ -282,8 +288,8 @@ export async function renderScan(url, opts = {}) {
             const worst = samples[Math.floor(samples.length * 0.1)];
             if (worst) { it.bg = [...worst.c, 1]; it.sampled = true; }
           } catch (e) { if (/did not answer/.test(e.message)) { opts.log?.('Screenshots are not answering on this page; image sampling stopped.'); shotsOk = false; } }
-          await cdp.send('Runtime.evaluate', { expression: `(() => { const e = document.querySelector('[data-ehc-i="${it.i}"]'); if (e) { e.style.color = e.dataset.ehcColor || ''; e.style.removeProperty('text-shadow'); } })()` }, s);
         }
+        if (shots.length) await cdp.send('Runtime.evaluate', { expression: `document.getElementById('ehc-notext')?.remove()` }, s);
         if ((step + 1) * 800 >= got.height) break;
       }
       } catch (e) {

@@ -121,7 +121,7 @@ export function readCss(text) {
     let val = src.slice(vs, ve);
     const imp = val.match(/\s*!(?:important|default|global)\s*$/i);
     if (imp) { val = val.slice(0, -imp[0].length); ve -= imp[0].length; }
-    if (stack.some((p) => /^@media\b[^{]*\bprint\b/i.test(p) && !/screen/i.test(p))) return; // print styles never reach a screen
+    if (stack.some((p) => (/^@media\b[^{]*\bprint\b/i.test(p) && !/screen/i.test(p)) || /^@(-webkit-)?keyframes\b/i.test(p))) return; // print styles never reach a screen; keyframe steps are not rules
     decls.push({ supports: stack.some((p) => /^@supports\b/i.test(p)), prop: m[1], value: val, span: [vs, ve], depth: stack.length, prelude: stack[stack.length - 1] || '', global: stack.every(isGlobalScope), mode: mode(), scoped: stack.some((p) => LIGHT_SEL.test(p)), block: blockId });
   };
   let blockId = 0, blockSeq = 0; const blockStack = [];
@@ -287,7 +287,7 @@ export function readCss(text) {
   const notes = firstTheme ? [`Only the first theme, ${firstTheme}, is checked${themeScopes.size ? `; ${themeScopes.size} other theme ${themeScopes.size === 1 ? 'scope is' : 'scopes are'} not` : ''}. Paste one theme at a time to check another.`] : themeScopes.size ? [`${themeScopes.size} other theme ${themeScopes.size === 1 ? 'scope was' : 'scopes were'} not checked (${[...themeScopes].slice(0, 3).join(', ')}${themeScopes.size > 3 ? ', …' : ''}): only the default light and dark colors are. Paste one theme at a time to check it.`] : [];
   const n = [...unread.values()].reduce((a, b) => a + b, 0);
   if (n) notes.push(`${n} color ${n === 1 ? 'value uses' : 'values use'} a function this checker cannot work out (${[...unread.keys()].slice(0, 5).map((f) => (f.startsWith('#') ? f : `${f}()`)).join(', ')}), so ${n === 1 ? 'it was' : 'they were'} not checked. Paste the compiled CSS to check ${n === 1 ? 'it' : 'them'}.`);
-  return { tokens: tokens.filter((t) => t.hex), rules, notes, vars: decls.filter((d) => d.prop.startsWith('--')).length };
+  return { tokens: tokens.filter((t) => t.hex), rules, notes, vars: decls.filter((d) => d.prop.startsWith('--')).length, darkMedia: DARK_MEDIA.test(text) };
 }
 
 /** light-dark(a, b) → [{ text, at }, { text, at }] (offsets inside the value), or null. */

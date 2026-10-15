@@ -2993,7 +2993,7 @@ function readCss(text2) {
       val = val.slice(0, -imp[0].length);
       ve -= imp[0].length;
     }
-    if (stack.some((p) => /^@media\b[^{]*\bprint\b/i.test(p) && !/screen/i.test(p))) return;
+    if (stack.some((p) => /^@media\b[^{]*\bprint\b/i.test(p) && !/screen/i.test(p) || /^@(-webkit-)?keyframes\b/i.test(p))) return;
     decls.push({ supports: stack.some((p) => /^@supports\b/i.test(p)), prop: m[1], value: val, span: [vs, ve], depth: stack.length, prelude: stack[stack.length - 1] || "", global: stack.every(isGlobalScope), mode: mode(), scoped: stack.some((p) => LIGHT_SEL.test(p)), block: blockId });
   };
   let blockId = 0, blockSeq = 0;
@@ -3235,7 +3235,7 @@ function readCss(text2) {
   const notes = firstTheme ? [`Only the first theme, ${firstTheme}, is checked${themeScopes.size ? `; ${themeScopes.size} other theme ${themeScopes.size === 1 ? "scope is" : "scopes are"} not` : ""}. Paste one theme at a time to check another.`] : themeScopes.size ? [`${themeScopes.size} other theme ${themeScopes.size === 1 ? "scope was" : "scopes were"} not checked (${[...themeScopes].slice(0, 3).join(", ")}${themeScopes.size > 3 ? ", \u2026" : ""}): only the default light and dark colors are. Paste one theme at a time to check it.`] : [];
   const n = [...unread.values()].reduce((a, b) => a + b, 0);
   if (n) notes.push(`${n} color ${n === 1 ? "value uses" : "values use"} a function this checker cannot work out (${[...unread.keys()].slice(0, 5).map((f2) => f2.startsWith("#") ? f2 : `${f2}()`).join(", ")}), so ${n === 1 ? "it was" : "they were"} not checked. Paste the compiled CSS to check ${n === 1 ? "it" : "them"}.`);
-  return { tokens: tokens.filter((t) => t.hex), rules, notes, vars: decls.filter((d) => d.prop.startsWith("--")).length };
+  return { tokens: tokens.filter((t) => t.hex), rules, notes, vars: decls.filter((d) => d.prop.startsWith("--")).length, darkMedia: DARK_MEDIA.test(text2) };
 }
 function splitLightDark(v) {
   const m = /^light-dark\(/i.exec(v);
@@ -3717,6 +3717,8 @@ function plan(read, opts = {}) {
   const add = (fg, bg, kind, why, extra = {}) => {
     if (!fg || !bg || fg === bg || fg.role === "ignore" || bg.role === "ignore") return;
     if (fg.alpha === 0 || bg.alpha === 0 || fg.via === bg.name || bg.via === fg.name) return;
+    if (opts.page && !extra.selector && why !== "declared by you") extra = { ...extra, optional: true, unconfirmed: true };
+    if (opts.page && fg.mode === "dark" && !read.darkMedia) extra = { ...extra, optional: true, darkSwitch: true };
     const asFg = fg, asBg = bg;
     fg = canon(fg);
     bg = canon(bg);
@@ -3738,6 +3740,7 @@ function plan(read, opts = {}) {
   };
   const rank = (k3) => ({ text: 3, large: 2, ui: 1, decor: 0 })[k3] ?? 0;
   const pairsLater = [];
+  const pageSkip = /* @__PURE__ */ new Set(), pageImage = /* @__PURE__ */ new Set(), pageEmpty = /* @__PURE__ */ new Set();
   const byName = new Map(tokens.map((t) => [`${t.name}|${t.mode}`, t]));
   const canon = (t) => {
     let x = t, n = 0;
@@ -3779,8 +3782,15 @@ function plan(read, opts = {}) {
       pairsLater.push([dflt, main2]);
     }
     const texts = all.filter((t) => t.role === "text");
-    for (const [a, b] of pairsLater.splice(0)) add(a, b, "text", "the browser's default text on the page background");
+    for (const [a, b] of pairsLater.splice(0)) add(a, b, "text", "the browser's default text on the page background", { selector: "body" });
     for (const r2 of modeRules.filter((x) => !(UTILITY.test(x.selector) && !(x.fg && x.bg)) && !(mode === "dark" && x.mode === "light" && ![x.fg, x.bg, x.border, x.outline].some((v) => v?.token)))) {
+      if (opts.page && !PAGE_SEL.test(r2.selector)) {
+        const n = opts.page.count(r2.selector);
+        if (n === 0) {
+          pageSkip.add(r2.selector);
+          continue;
+        }
+      }
       const tok = (v) => {
         if (!v || v.image) return null;
         if (v.token) {
@@ -3792,10 +3802,39 @@ function plan(read, opts = {}) {
       };
       if (!r2.bg && r2.fg && (ELSEWHERE.test(r2.selector) || TEXT_UTILITY.test(r2.selector))) continue;
       const base = !r2.bg ? modeRules.find((x) => x !== r2 && x.bg && !x.bg.image && baseSel(x.selector) === baseSel(r2.selector) && states(x.selector) === states(r2.selector)) || modeRules.find((x) => x !== r2 && x.bg && !x.bg.image && baseSel(x.selector) === baseSel(r2.selector) && !states(x.selector)) : null;
-      const bg = r2.bg && !r2.bg.image ? tok(r2.bg) : base ? tok(base.bg) : main2;
+      let pageBg = null;
+      if (opts.page && r2.bg && !r2.bg.image && (r2.bg.alpha ?? 1) < 1) {
+        const under = opts.page.bgFor(r2.selector, modeRules.filter((x) => x.bg && !states(x.selector)), true);
+        if (under === "image") {
+          pageImage.add(r2.selector);
+          continue;
+        }
+      }
+      if (opts.page && !r2.bg) {
+        const found = opts.page.bgFor(r2.selector, modeRules.filter((x) => x.bg && !states(x.selector)));
+        if (found === "image") {
+          pageImage.add(r2.selector);
+          continue;
+        }
+        if (found) pageBg = found.bg;
+      }
+      const bg = r2.bg && !r2.bg.image ? tok(r2.bg) : pageBg ? tok(pageBg) : base ? tok(base.bg) : main2;
       const large = r2.fontSize ? isLarge(r2.fontSize, r2.fontWeight) : false;
-      if (r2.fg) add(tok(r2.fg), bg, large ? "large" : "text", `${r2.selector} sets ${r2.bg ? "color and background" : "color"}`, { selector: r2.selector, image: r2.bg?.image, guess: !r2.bg && !base });
-      for (const k3 of ["border", "outline"]) if (r2[k3] && bg) add(tok(r2[k3]), bg, /input|select|textarea|button|focus|checkbox|radio/i.test(r2.selector) || k3 === "outline" ? "ui" : "decor", `${r2.selector} sets ${k3}`, { selector: r2.selector });
+      const noText = opts.page && r2.fg && !PAGE_SEL.test(r2.selector) && opts.page.hasText?.(r2.selector) === false;
+      if (noText) pageEmpty.add(r2.selector);
+      if (r2.fg && !noText) add(tok(r2.fg), bg, large ? "large" : "text", `${r2.selector} sets ${r2.bg ? "color and background" : "color"}${pageBg ? " (background from the element it sits in)" : ""}`, { selector: r2.selector, image: r2.bg?.image, guess: !r2.bg && !base && !pageBg, under: main2?.hex });
+      for (const k3 of ["border", "outline"]) if (r2[k3] && bg) add(tok(r2[k3]), bg, /input|select|textarea|button|focus|checkbox|radio/i.test(r2.selector) || k3 === "outline" ? "ui" : "decor", `${r2.selector} sets ${k3}`, { selector: r2.selector, under: main2?.hex });
+    }
+    if (opts.page?.plainLinks && mode === "light") {
+      const pl = opts.page.plainLinks(modeRules.filter((x) => x.bg && !states(x.selector)));
+      if (pl && pl.bg === "image") pageImage.add(pl.where);
+      else if (pl) {
+        const link2 = synth(tokens, { hex: "0000ee", alpha: 1 }, mode, "the browser default");
+        link2.name = "default link blue (#0000ee, the browser default)";
+        link2.span = null;
+        const v = pl.bg?.bg, bg = !v ? main2 : v.token ? all.find((t) => t.name === v.token) || main2 : synth(tokens, v, mode, pl.bg.selector);
+        if (bg) add(link2, bg, "text", `${pl.count} link${pl.count > 1 ? "s" : ""} no CSS rule colours, drawn in the browser's default blue`, { selector: pl.where });
+      }
     }
     for (const t of texts) {
       if (t.on) {
@@ -3841,7 +3880,7 @@ function plan(read, opts = {}) {
   }
   const inPair = new Set(pairs.flatMap((p) => [p.fg.name, p.bg.name, p.asFg, p.asBg]));
   const unchecked = [...new Set(tokens.filter((t) => !t.unnamed && !t.literal && !t.inherited && t.role !== "ignore" && t.role !== "scale" && !inPair.has(t.name) && !tokens.some((x) => x.via === t.name)).map((t) => t.name))];
-  return { tokens, pairs: pairs.slice(0, MAX_PAIRS), groups: groups2, modes: modes2, tooMany: pairs.length > MAX_PAIRS, unchecked };
+  return { tokens, pairs: pairs.slice(0, MAX_PAIRS), groups: groups2, modes: modes2, tooMany: pairs.length > MAX_PAIRS, unchecked, pageSkip: pageSkip.size, pageImage: pageImage.size, pageEmpty: pageEmpty.size };
 }
 var TEXT_UTILITY = /(^|[\s.:(*,>])\.?[\w\\:\[\]\.*-]*text-[\w\\/.!\[\]#-]+/;
 var baseSel = (sel) => String(sel).split(",")[0].trim().replace(/::?[\w-]+(\([^)]*\))?/g, "").trim();
@@ -3871,7 +3910,7 @@ function synth(tokens, v, mode, selector) {
   return t;
 }
 function judge(p, target = "AA", apca2) {
-  const bgHex = p.bg.alpha < 1 ? over(p.bg.hex, p.bg.alpha, p.mode === "dark" ? "000000" : "ffffff") : p.bg.hex;
+  const bgHex = p.bg.alpha < 1 ? over(p.bg.hex, p.bg.alpha, p.under || (p.mode === "dark" ? "000000" : "ffffff")) : p.bg.hex;
   const fgHex = over(p.fg.hex, p.fg.alpha, bgHex);
   const ratio2 = contrast2(fgHex, bgHex);
   const need = needOf(p.kind, target);
@@ -3888,7 +3927,13 @@ function judge(p, target = "AA", apca2) {
     level: p.kind === "ui" ? ratio2 >= 3 ? "meets 3:1" : "under 3:1" : ratio2 >= 7 ? "AAA" : ratio2 >= 4.5 ? "AA" : ratio2 >= 3 ? "AA large" : "fail",
     margin: r12(ratio2 - need, 2)
   };
-  if (p.image) out.image = true;
+  if (p.image) {
+    out.image = true;
+    out.optional = true;
+    out.pass = null;
+    out.unknownBg = true;
+    out.why = `${p.why}; the background is an image or gradient, so contrast can only be measured on the drawn page`;
+  }
   if (p.optional) {
     out.optional = true;
     out.pass = null;
@@ -4045,7 +4090,7 @@ function solve(planned, target = "AA", lock = [], opts = {}) {
   const value = new Map(planned.tokens.map((t) => [t.id, t.hex]));
   const locked = new Set(lock.map(String));
   const pairs = planned.pairs.filter((p) => p.kind !== "decor" && !p.optional && !p.image && !((p.guess || p.generic) && contrast2(p.fg.hex, p.bg.hex) < 1.2));
-  const shownBg = (p, v) => p.bg.alpha < 1 ? over(v.get(p.bg.id), p.bg.alpha, p.mode === "dark" ? "000000" : "ffffff") : v.get(p.bg.id);
+  const shownBg = (p, v) => p.bg.alpha < 1 ? over(v.get(p.bg.id), p.bg.alpha, p.under || (p.mode === "dark" ? "000000" : "ffffff")) : v.get(p.bg.id);
   const ratioOf = (p, v = value) => {
     const bg = shownBg(p, v);
     return contrast(col2(over(v.get(p.fg.id), p.fg.alpha, bg)), col2(bg));
@@ -4263,7 +4308,7 @@ function check(input, opts = {}) {
   const failing2 = judged.filter((p) => !p.pass && p.kind !== "decor" && !p.optional);
   const report = {
     version: VERSION,
-    input: { kind: read.kind, colors: new Set(planned.tokens.filter((t) => !t.inherited).map((t) => `${t.name}|${t.mode}`)).size, rules: read.rules?.length || 0, modes: planned.modes, warnings: [...read.warnings, ...planned.tooMany ? [`Only the first ${MAX_PAIRS} pairs are checked.`] : []] },
+    input: { page: opts.page ? { rulesNotOnPage: planned.pageSkip, overImages: planned.pageImage, noText: planned.pageEmpty } : void 0, kind: read.kind, colors: new Set(planned.tokens.filter((t) => !t.inherited).map((t) => `${t.name}|${t.mode}`)).size, rules: read.rules?.length || 0, modes: planned.modes, warnings: [...read.warnings, ...planned.tooMany ? [`Only the first ${MAX_PAIRS} pairs are checked.`] : [], ...planned.pageSkip ? [`${planned.pageSkip} CSS rules are for elements this page's HTML does not have or hides on load (other pages, or shown by scripts): not judged.`] : [], ...planned.pageEmpty ? [`${planned.pageEmpty} text colors are set on elements that hold no text on this page (only images or icons): not judged.`] : [], ...planned.pageImage ? [`${planned.pageImage} text colors sit on an image or gradient: their contrast can only be measured on the drawn page (the command-line scan does that).`] : [], ...opts.page ? ["Pairs guessed from color names alone are listed apart: a stylesheet does not say they meet on this page."] : [], ...opts.page && planned.pairs.some((p) => p.darkSwitch) ? ["This site's dark mode is switched by a class or attribute, not the visitor's system setting: dark-mode pairs are listed apart, not judged."] : []] },
     target,
     standard: TARGETS[target].label,
     tokens: planned.tokens.filter((t) => !t.literal || judged.some((p) => p.fg.name === t.name || p.bg.name === t.name)).map((t) => ({ name: t.name, hex: t.hex, alpha: t.alpha ?? 1, mode: t.mode, role: t.role || "other", why: t.why || null, at: t.span ? t.span[0] : null, ...t.where ? { where: t.where } : {}, ...t.inherited ? { inherited: true } : {} })),
@@ -4760,6 +4805,7 @@ var ratio = (a, b) => {
   return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
 };
 var hex2 = (c2) => "#" + c2.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("");
+var SETTLE = `if (!document.getElementById('ehc-settle')) { const st = document.createElement('style'); st.id = 'ehc-settle'; st.textContent = '*, *::before, *::after { transition-duration: 0s !important; transition-delay: 0s !important; } html, body { scroll-behavior: auto !important; }'; document.head.appendChild(st); }`;
 var COLLECT = `(() => {
   // any CSS colour (rgb, oklch, color(), color-mix\u2026) to sRGB 0-255 with alpha, by painting one pixel and reading it back
   const c1 = document.createElement('canvas'); c1.width = c1.height = 1;
@@ -4795,9 +4841,10 @@ var COLLECT = `(() => {
     const x = Math.min(innerWidth - 1, Math.max(0, r.left + Math.min(r.width / 2, 12))), y = Math.min(innerHeight - 1, Math.max(0, r.top + r.height / 2));
     // what lies under that spot, from the element itself downwards
     const stack = document.elementsFromPoint(x, y);
-    const from = stack.indexOf(el) >= 0 ? stack.indexOf(el) : 0;
+    // an element with pointer-events: none is not in that list: then it and the elements it sits in
+    const under = stack.includes(el) ? stack.slice(stack.indexOf(el)) : (() => { const l = []; for (let e = el; e; e = e.parentElement) l.push(e); return l; })();
     const layers = []; let image = false;
-    for (const e of stack.slice(from)) {
+    for (const e of under) {
       const s = getComputedStyle(e);
       if (s.backgroundImage && s.backgroundImage !== 'none') { image = true; break; }
       if (/^(IMG|VIDEO|CANVAS|SVG|PICTURE)$/i.test(e.tagName) && e !== el) { image = true; break; }
@@ -4885,12 +4932,14 @@ async function renderScan(url, opts = {}) {
         const until = Date.now() + 6e4;
         let shotsOk = true;
         for (let step = 0; step < 15; step++) {
-          const res = await evaluate(`scrollTo(0, ${step * 800}); ${COLLECT}`);
+          const res = await evaluate(`${SETTLE} scrollTo({ top: ${step * 800}, behavior: 'instant' }); ${COLLECT}`);
           if (res.exceptionDetails) throw new Error("The page could not be read: " + (res.exceptionDetails.exception?.description || res.exceptionDetails.text));
           const got = res.result.value;
           finalUrl = got.url;
           items.push(...got.items);
-          for (const it of got.items.filter((x) => x.image)) {
+          const shots = got.items.filter((x) => x.image);
+          if (shots.length) await cdp.send("Runtime.evaluate", { expression: `(() => { const st = document.createElement('style'); st.id = 'ehc-notext'; st.textContent = '*, *::before, *::after { color: transparent !important; -webkit-text-fill-color: transparent !important; text-shadow: none !important; text-decoration-color: transparent !important; caret-color: transparent !important; transition: none !important; }'; document.head.appendChild(st); return new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(ok))); })()`, awaitPromise: true }, s);
+          for (const it of shots) {
             if (!shotsOk || over2.length >= 60) break;
             if (Date.now() > until) {
               opts.log?.("Image sampling stopped after 60 s; the rest keep their composited background.");
@@ -4898,7 +4947,6 @@ async function renderScan(url, opts = {}) {
               break;
             }
             over2.push(it);
-            await cdp.send("Runtime.evaluate", { expression: `(() => { const e = document.querySelector('[data-ehc-i="${it.i}"]'); if (e) { e.dataset.ehcColor = e.style.color; e.style.setProperty('color', 'transparent', 'important'); e.style.setProperty('text-shadow', 'none', 'important'); } })()` }, s);
             const [x, y, w, hh] = it.rect;
             try {
               const shot = await cdp.send("Page.captureScreenshot", { format: "png", clip: { x: Math.max(0, x), y: Math.max(0, y), width: Math.max(1, Math.min(w, 600)), height: Math.max(1, Math.min(hh, 300)), scale: 1 } }, s, 8e3);
@@ -4921,8 +4969,8 @@ async function renderScan(url, opts = {}) {
                 shotsOk = false;
               }
             }
-            await cdp.send("Runtime.evaluate", { expression: `(() => { const e = document.querySelector('[data-ehc-i="${it.i}"]'); if (e) { e.style.color = e.dataset.ehcColor || ''; e.style.removeProperty('text-shadow'); } })()` }, s);
           }
+          if (shots.length) await cdp.send("Runtime.evaluate", { expression: `document.getElementById('ehc-notext')?.remove()` }, s);
           if ((step + 1) * 800 >= got.height) break;
         }
       } catch (e3) {

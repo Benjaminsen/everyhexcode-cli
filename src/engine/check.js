@@ -183,6 +183,10 @@ export function plan(read, opts = {}) {
     // a fully transparent colour paints nothing; a token that points to the other one is the same colour, not a pair
     if (fg.alpha === 0 || bg.alpha === 0 || fg.via === bg.name || bg.via === fg.name) return;
     // an alias (--color-background: var(--background), {color.base.gray-900}) is judged and fixed as its source
+    // on a scanned page, a pair guessed from names alone is not seen on the page: listed, not judged
+    if (opts.page && !extra.selector && why !== 'declared by you') extra = { ...extra, optional: true, unconfirmed: true };
+    // a dark theme switched by a class or attribute (not by the visitor's system setting) is not on unless the page turns it on
+    if (opts.page && fg.mode === 'dark' && !read.darkMedia) extra = { ...extra, optional: true, darkSwitch: true };
     const asFg = fg, asBg = bg;
     fg = canon(fg); bg = canon(bg);
     if (fg === bg) return;
@@ -201,6 +205,7 @@ export function plan(read, opts = {}) {
   };
   const rank = (k) => ({ text: 3, large: 2, ui: 1, decor: 0 })[k] ?? 0;
   const pairsLater = [];
+  const pageSkip = new Set(), pageImage = new Set(), pageEmpty = new Set();
   const byName = new Map(tokens.map((t) => [`${t.name}|${t.mode}`, t]));
   const canon = (t) => { let x = t, n = 0; while (x.via && n++ < 8) { const y = byName.get(`${x.via}|${x.mode}`) || byName.get(`${x.via}|light`); if (!y || y === x || y.role === 'ignore' || isPalette(y)) break; x = y; } return x; };
 
@@ -237,8 +242,10 @@ export function plan(read, opts = {}) {
     }
     const texts = all.filter((t) => t.role === 'text');
     // 1. CSS rules: what a selector really sets
-    for (const [a, b] of pairsLater.splice(0)) add(a, b, 'text', "the browser's default text on the page background");
+    for (const [a, b] of pairsLater.splice(0)) add(a, b, 'text', "the browser's default text on the page background", { selector: 'body' });
     for (const r of modeRules.filter((x) => !(UTILITY.test(x.selector) && !(x.fg && x.bg)) && !(mode === 'dark' && x.mode === 'light' && ![x.fg, x.bg, x.border, x.outline].some((v) => v?.token)))) {
+      // a website scan knows the page's HTML: a rule for elements the page does not have is not judged
+      if (opts.page && !PAGE_SEL.test(r.selector)) { const n = opts.page.count(r.selector); if (n === 0) { pageSkip.add(r.selector); continue; } }
       const tok = (v) => {
         if (!v || v.image) return null;
         if (v.token) {
@@ -254,10 +261,32 @@ export function plan(read, opts = {}) {
       // a rule that sets only the text colour of a state (.button:hover) takes the background its base rule sets
       const base = !r.bg ? (modeRules.find((x) => x !== r && x.bg && !x.bg.image && baseSel(x.selector) === baseSel(r.selector) && states(x.selector) === states(r.selector))
         || modeRules.find((x) => x !== r && x.bg && !x.bg.image && baseSel(x.selector) === baseSel(r.selector) && !states(x.selector))) : null;
-      const bg = r.bg && !r.bg.image ? tok(r.bg) : base ? tok(base.bg) : main;
+      // on a scanned page, the background is the one the nearest ancestor (or the element) gets from the stylesheets
+      let pageBg = null;
+      // a translucent background of its own shows what is behind it: an image there makes the pair unknowable
+      if (opts.page && r.bg && !r.bg.image && (r.bg.alpha ?? 1) < 1) { const under = opts.page.bgFor(r.selector, modeRules.filter((x) => x.bg && !states(x.selector)), true); if (under === 'image') { pageImage.add(r.selector); continue; } }
+      if (opts.page && !r.bg) {
+        const found = opts.page.bgFor(r.selector, modeRules.filter((x) => x.bg && !states(x.selector)));
+        if (found === 'image') { pageImage.add(r.selector); continue; }
+        if (found) pageBg = found.bg;
+      }
+      const bg = r.bg && !r.bg.image ? tok(r.bg) : pageBg ? tok(pageBg) : base ? tok(base.bg) : main;
       const large = r.fontSize ? isLarge(r.fontSize, r.fontWeight) : false;
-      if (r.fg) add(tok(r.fg), bg, large ? 'large' : 'text', `${r.selector} sets ${r.bg ? 'color and background' : 'color'}`, { selector: r.selector, image: r.bg?.image, guess: !r.bg && !base });
-      for (const k of ['border', 'outline']) if (r[k] && bg) add(tok(r[k]), bg, /input|select|textarea|button|focus|checkbox|radio/i.test(r.selector) || k === 'outline' ? 'ui' : 'decor', `${r.selector} sets ${k}`, { selector: r.selector });
+      // a text colour on elements that hold no text on this page (an image thumbnail) paints nothing
+      const noText = opts.page && r.fg && !PAGE_SEL.test(r.selector) && opts.page.hasText?.(r.selector) === false;
+      if (noText) pageEmpty.add(r.selector);
+      if (r.fg && !noText) add(tok(r.fg), bg, large ? 'large' : 'text', `${r.selector} sets ${r.bg ? 'color and background' : 'color'}${pageBg ? ' (background from the element it sits in)' : ''}`, { selector: r.selector, image: r.bg?.image, guess: !r.bg && !base && !pageBg, under: main?.hex });
+      for (const k of ['border', 'outline']) if (r[k] && bg) add(tok(r[k]), bg, /input|select|textarea|button|focus|checkbox|radio/i.test(r.selector) || k === 'outline' ? 'ui' : 'decor', `${r.selector} sets ${k}`, { selector: r.selector, under: main?.hex });
+    }
+    // links no colour rule reaches are drawn in the browser's own blue, which no stylesheet shows
+    if (opts.page?.plainLinks && mode === 'light') {
+      const pl = opts.page.plainLinks(modeRules.filter((x) => x.bg && !states(x.selector)));
+      if (pl && pl.bg === 'image') pageImage.add(pl.where);
+      else if (pl) {
+        const link = synth(tokens, { hex: '0000ee', alpha: 1 }, mode, 'the browser default'); link.name = 'default link blue (#0000ee, the browser default)'; link.span = null;
+        const v = pl.bg?.bg, bg = !v ? main : v.token ? (all.find((t) => t.name === v.token) || main) : synth(tokens, v, mode, pl.bg.selector);
+        if (bg) add(link, bg, 'text', `${pl.count} link${pl.count > 1 ? 's' : ''} no CSS rule colours, drawn in the browser's default blue`, { selector: pl.where });
+      }
     }
     // 2. names: X-foreground on X, on-X on X
     for (const t of texts) {
@@ -307,7 +336,7 @@ export function plan(read, opts = {}) {
   // colours with a name but no role and in no pair: listed, so nothing is skipped without saying so
   const inPair = new Set(pairs.flatMap((p) => [p.fg.name, p.bg.name, p.asFg, p.asBg]));
   const unchecked = [...new Set(tokens.filter((t) => !t.unnamed && !t.literal && !t.inherited && t.role !== 'ignore' && t.role !== 'scale' && !inPair.has(t.name) && !tokens.some((x) => x.via === t.name)).map((t) => t.name))];
-  return { tokens, pairs: pairs.slice(0, MAX_PAIRS), groups, modes, tooMany: pairs.length > MAX_PAIRS, unchecked };
+  return { tokens, pairs: pairs.slice(0, MAX_PAIRS), groups, modes, tooMany: pairs.length > MAX_PAIRS, unchecked, pageSkip: pageSkip.size, pageImage: pageImage.size, pageEmpty: pageEmpty.size };
 }
 
 // a text-colour utility somewhere in a selector (Tailwind's .hover\:text-red-500, .text-neutral-400\!, variants)
@@ -345,7 +374,8 @@ function synth(tokens, v, mode, selector) {
 
 /** One pair judged: WCAG 2 (with alpha laid over the background), APCA if given, glare, colour vision, low vision. */
 export function judge(p, target = 'AA', apca) {
-  const bgHex = p.bg.alpha < 1 ? over(p.bg.hex, p.bg.alpha, p.mode === 'dark' ? '000000' : 'ffffff') : p.bg.hex;
+  // a translucent background shows the page under it
+  const bgHex = p.bg.alpha < 1 ? over(p.bg.hex, p.bg.alpha, p.under || (p.mode === 'dark' ? '000000' : 'ffffff')) : p.bg.hex;
   const fgHex = over(p.fg.hex, p.fg.alpha, bgHex);
   const ratio = contrast(fgHex, bgHex);
   const need = needOf(p.kind, target);
@@ -357,7 +387,8 @@ export function judge(p, target = 'AA', apca) {
     level: p.kind === 'ui' ? (ratio >= 3 ? 'meets 3:1' : 'under 3:1') : ratio >= 7 ? 'AAA' : ratio >= 4.5 ? 'AA' : ratio >= 3 ? 'AA large' : 'fail',
     margin: r1(ratio - need, 2),
   };
-  if (p.image) out.image = true;
+  // text on an image or gradient: the colour behind it is not one colour, so it is listed, not judged
+  if (p.image) { out.image = true; out.optional = true; out.pass = null; out.unknownBg = true; out.why = `${p.why}; the background is an image or gradient, so contrast can only be measured on the drawn page`; }
   // a combination only a bare palette suggests is reported, not judged: pass is null
   if (p.optional) { out.optional = true; out.pass = null; }
   // text set without a background and nearly the page's own colour must sit on something the stylesheets do not show
@@ -518,7 +549,7 @@ export function solve(planned, target = 'AA', lock = [], opts = {}) {
   const value = new Map(planned.tokens.map((t) => [t.id, t.hex]));
   const locked = new Set(lock.map(String));
   const pairs = planned.pairs.filter((p) => p.kind !== 'decor' && !p.optional && !p.image && !((p.guess || p.generic) && contrast(p.fg.hex, p.bg.hex) < 1.2));
-  const shownBg = (p, v) => (p.bg.alpha < 1 ? over(v.get(p.bg.id), p.bg.alpha, p.mode === 'dark' ? '000000' : 'ffffff') : v.get(p.bg.id));
+  const shownBg = (p, v) => (p.bg.alpha < 1 ? over(v.get(p.bg.id), p.bg.alpha, p.under || (p.mode === 'dark' ? '000000' : 'ffffff')) : v.get(p.bg.id));
   const ratioOf = (p, v = value) => { const bg = shownBg(p, v); return wcagContrast(col(over(v.get(p.fg.id), p.fg.alpha, bg)), col(bg)); };
   const ok = (p, v = value, extra = 0) => { const r = ratioOf(p, v); return r >= needOf(p.kind, target) + extra && contrast(over(v.get(p.fg.id), p.fg.alpha, shownBg(p, v)), shownBg(p, v)) >= needOf(p.kind, target); };
   // which way round each pair is now (text lighter or darker than its background): a fix keeps it so
@@ -676,7 +707,7 @@ export function check(input, opts = {}) {
   const failing = judged.filter((p) => !p.pass && p.kind !== 'decor' && !p.optional);
   const report = {
     version: VERSION,
-    input: { kind: read.kind, colors: new Set(planned.tokens.filter((t) => !t.inherited).map((t) => `${t.name}|${t.mode}`)).size, rules: read.rules?.length || 0, modes: planned.modes, warnings: [...read.warnings, ...(planned.tooMany ? [`Only the first ${MAX_PAIRS} pairs are checked.`] : [])] },
+    input: { page: opts.page ? { rulesNotOnPage: planned.pageSkip, overImages: planned.pageImage, noText: planned.pageEmpty } : undefined, kind: read.kind, colors: new Set(planned.tokens.filter((t) => !t.inherited).map((t) => `${t.name}|${t.mode}`)).size, rules: read.rules?.length || 0, modes: planned.modes, warnings: [...read.warnings, ...(planned.tooMany ? [`Only the first ${MAX_PAIRS} pairs are checked.`] : []), ...(planned.pageSkip ? [`${planned.pageSkip} CSS rules are for elements this page's HTML does not have or hides on load (other pages, or shown by scripts): not judged.`] : []), ...(planned.pageEmpty ? [`${planned.pageEmpty} text colors are set on elements that hold no text on this page (only images or icons): not judged.`] : []), ...(planned.pageImage ? [`${planned.pageImage} text colors sit on an image or gradient: their contrast can only be measured on the drawn page (the command-line scan does that).`] : []), ...(opts.page ? ['Pairs guessed from color names alone are listed apart: a stylesheet does not say they meet on this page.'] : []), ...(opts.page && planned.pairs.some((p) => p.darkSwitch) ? ["This site's dark mode is switched by a class or attribute, not the visitor's system setting: dark-mode pairs are listed apart, not judged."] : [])] },
     target, standard: TARGETS[target].label,
     tokens: planned.tokens.filter((t) => !t.literal || judged.some((p) => p.fg.name === t.name || p.bg.name === t.name)).map((t) => ({ name: t.name, hex: t.hex, alpha: t.alpha ?? 1, mode: t.mode, role: t.role || 'other', why: t.why || null, at: t.span ? t.span[0] : null, ...(t.where ? { where: t.where } : {}), ...(t.inherited ? { inherited: true } : {}) })),
     pairs: judged,
