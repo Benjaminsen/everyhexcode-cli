@@ -2847,6 +2847,28 @@ function contrast2(a, b) {
   return [3, 4.5, 7].some((t) => x < t && r2 >= t) ? Math.floor(x * 100) / 100 : r2;
 }
 var inSrgb = inGamut("rgb");
+var FAMILIES = [
+  ["red", 0, 40],
+  ["orange", 40, 78],
+  ["yellow", 78, 110],
+  ["green", 110, 165],
+  ["teal", 165, 200],
+  ["blue", 200, 275],
+  ["purple", 275, 330],
+  ["pink", 330, 355],
+  ["red", 355, 361]
+];
+function family(hex3) {
+  const o = useConv("oklch")(col(hex3));
+  if (o.l > 0.96 && o.c < 0.03) return "white";
+  if (o.l < 0.22 && o.c < 0.05) return "black";
+  if (o.c < 0.035) return "gray";
+  const h = o.h || 0;
+  if (h >= 20 && h < 90 && o.l < 0.62 && o.c < 0.16) return "brown";
+  if ((h >= 330 || h < 20) && o.l > 0.72) return "pink";
+  const f2 = FAMILIES.find(([, a, b]) => h >= a && h < b);
+  return f2 ? f2[0] : "red";
+}
 function cvd(filter, severity = 1) {
   const f2 = filter(severity);
   return (c2) => {
@@ -3570,6 +3592,146 @@ function readInput(text2, max = 2e5) {
   return { ...out, warnings };
 }
 
+// cli/src/engine/plain.js
+var TAGS = { a: "link", button: "button", input: "text field", textarea: "text box", select: "drop-down", label: "label", h1: "main heading", h2: "heading", h3: "heading", h4: "heading", h5: "heading", h6: "heading", p: "text", li: "list item", th: "table heading", td: "table text", small: "small print", code: "code", pre: "code", blockquote: "quote", caption: "caption", figcaption: "caption", summary: "toggle", nav: "menu", footer: "footer", header: "header", svg: "icon", hr: "divider line", body: "page text", html: "page text", span: "text", div: "text", strong: "bold text", b: "bold text", em: "text", time: "date", mark: "highlight" };
+var PLACES = [[/\bfooter\b|(^|[-_])footer/, "in the footer"], [/\bheader\b|(^|[-_])(header|masthead|topbar)/, "in the header"], [/\bnav\b|(^|[-_])(nav|navbar|menu)/, "in the menu"], [/\baside\b|(^|[-_])sidebar/, "in the sidebar"], [/(^|[-_.])(modal|dialog|popover)/, "in pop-ups"], [/(^|[-_.])card/, "on cards"], [/(^|[-_.])hero/, "in the top banner"], [/\btable\b|\bt[dh]\b/, "in tables"], [/(^|[-_.])(alert|toast|banner)/, "in notices"], [/(^|[-_.])(tooltip)/, "in tooltips"]];
+var NOISE = /^(js|is|has|u|c|l|o|wp|el|col|row|d|flex|grid|container|wrapper|wrap|inner|outer|item|block|main|content|text|color|colour|style|active|current|default|base|primary|secondary|lg|md|sm|xs|xl|\d+)$/;
+var human = (s) => s.replace(/^[-_.#]+/, "").split(/[-_]+|(?<=[a-z])(?=[A-Z])/).map((w) => w.toLowerCase()).filter((w) => w && !NOISE.test(w));
+function thingOf(selector, part, kind) {
+  const first = String(selector || "").split(/,(?![^(]*\))/)[0].trim();
+  const steps = first.split(/\s*[>+~]\s*|\s+/).filter(Boolean);
+  const last = steps[steps.length - 1] || "";
+  const before = steps.slice(0, -1).join(" ").toLowerCase();
+  const state = /:hover/.test(last) ? "hover" : /:focus/.test(last) ? "focus" : /:visited/.test(last) ? "visited" : /::?placeholder/.test(last) ? "placeholder" : /:active/.test(last) ? "pressed" : null;
+  const bare = last.replace(/::?[\w-]+(\([^)]*\))?/g, "");
+  const tag = (bare.match(/^[a-z][a-z0-9]*/i) || [""])[0].toLowerCase();
+  const classes = [...bare.matchAll(/[.#]([\w-]+)/g)].map((m) => m[1]);
+  const attr = (bare.match(/\[type=["']?(\w+)/) || [])[1];
+  const cls = classes.join(" ").toLowerCase();
+  let name = null, shape = kind === "ui" ? "field" : "text";
+  if (/search/.test(cls) || attr === "search") {
+    name = "search box";
+    shape = "field";
+  } else if (attr === "checkbox" || /checkbox/.test(cls)) {
+    name = "checkbox";
+    shape = "check";
+  } else if (attr === "radio" || /radio/.test(cls)) {
+    name = "option button";
+    shape = "check";
+  } else if (tag === "input" || tag === "textarea" || tag === "select" || /(^|[-_ ])(input|field|form-control|textarea|select)([-_ ]|$)/.test(cls)) {
+    name = tag === "select" || /select/.test(cls) ? "drop-down" : tag === "textarea" ? "text box" : "text field";
+    shape = "field";
+  } else if (tag === "button" || attr === "submit" || /(^|[-_ ])(btn|button|cta)([-_ ]|$)/.test(cls)) {
+    name = "button";
+    shape = "button";
+  } else if (tag === "a" || /(^|[-_ ])link([-_ ]|s?$)/.test(cls)) {
+    name = "link";
+    shape = "link";
+  } else if (/^h[1-6]$/.test(tag) || /(^|[-_ ])(heading|title|headline)([-_ ]|$)/.test(cls)) {
+    name = tag === "h1" ? "main heading" : "heading";
+    shape = "heading";
+  } else if (/icon|svg/.test(cls) || tag === "svg") {
+    name = "icon";
+    shape = "icon";
+  } else if (/badge|tag|chip|pill|label/.test(cls)) {
+    name = "label";
+    shape = "badge";
+  }
+  const PLACE_WORDS = /^(footer|header|masthead|topbar|nav|navbar|menu|sidebar|modal|dialog|popover|card|hero|alert|toast|banner|tooltip)$/;
+  const words2 = human(classes[classes.length - 1] || "").filter((w) => !PLACE_WORDS.test(w));
+  if (!name) name = words2.length ? `\u201C${words2.join(" ")}\u201D ${tag && TAGS[tag] && !/^(text|page text)$/.test(TAGS[tag]) ? TAGS[tag] : "text"}` : TAGS[tag] || (kind === "ui" ? "control" : "text");
+  let where = null;
+  const around = `${before} ${cls}`;
+  for (const [re, w] of PLACES) if (re.test(around) && !name.includes(w.replace(/^(in|on) (the )?/, "").replace(/s$/, ""))) {
+    where = w;
+    break;
+  }
+  if (!where) {
+    const id = (before.match(/#([\w-]+)/g) || []).pop();
+    if (id) {
+      const w = human(id);
+      if (w.length) where = `in the \u201C${w.join(" ")}\u201D section`;
+    }
+  }
+  if (state === "placeholder") name = `placeholder text in the ${name}`;
+  const when = state === "hover" ? "when the pointer is over it" : state === "focus" ? "when it has keyboard focus" : state === "visited" ? "once visited" : state === "pressed" ? "while pressed" : null;
+  const what = part === "border" ? `border of the ${name}` : part === "outline" ? `focus ring of the ${name}` : name;
+  return { name, what, where, when, shape: part === "outline" ? "focus" : shape };
+}
+function tokenThing(name, kind) {
+  const w = human(String(name).replace(/^(--|\$|@)/, "")).filter((x) => !/^(fg|foreground|bg|background|on)$/.test(x));
+  if (kind === "ui") return w.some((x) => /ring|focus|outline/.test(x)) ? "focus ring" : w.some((x) => /input|border|field|control/.test(x)) ? "text field borders" : `${w.join(" ") || "interface"} color`;
+  return w.length ? `${w.join(" ")} text` : "body text";
+}
+function colorWords(hex3) {
+  const o = info(hex3).oklch || { l: 50, c: 0 }, l = o.l / 100, f2 = family(hex3);
+  if (l > 0.95) return /^f{6}$/i.test(hex3) ? "white" : "off-white";
+  if (l < 0.2) return "near-black";
+  if (f2 === "white" || f2 === "black" || f2 === "gray") return l > 0.85 ? "very light gray" : l > 0.7 ? "light gray" : l < 0.4 ? "dark gray" : "gray";
+  return `${l > 0.85 ? "very light " : l > 0.7 ? "light " : l < 0.4 ? "dark " : ""}${f2}`;
+}
+var lighterOrDarker = (from, to) => (info(to).oklch?.l ?? 0) > (info(from).oklch?.l ?? 0) ? "lighter" : "darker";
+var propOf = (part, side) => side === "bg" ? "background-color" : part === "border" ? "border-color" : part === "outline" ? "outline-color" : "color";
+function explain(p, fix) {
+  const part = /sets (border|outline)\b/.test(p.why || "") ? p.why.match(/sets (border|outline)/)[1] : "color";
+  const fromRule = p.selector && !/^(body|html|:root)$/.test(p.selector);
+  const t = fromRule ? thingOf(p.selector, part, p.kind) : { what: /default link/.test(p.fg.name) ? "links" : /default text|browser default/.test(p.fg.name) ? "page text" : tokenThing(p.fg.source || p.fg.name, p.kind), where: null, when: null, shape: p.kind === "ui" ? "field" : "text" };
+  if (/links? no CSS rule colours/.test(p.why || "")) {
+    t.what = /^1 link/.test(p.why) ? "link" : "links";
+    t.shape = "link";
+  }
+  const plural = /s$/.test(t.what) && !/(text|ss)$/.test(t.what);
+  const onPage = p.pageBg && p.bg.shown === p.pageBg;
+  const bgWords = onPage ? "the page background" : `its ${colorWords(p.bg.shown)} background`;
+  const subject = `${t.what}${t.where ? ` ${t.where}` : ""}`;
+  const Subject = subject.replace(/[a-z]/, (c2) => c2.toUpperCase());
+  const swatches = `${colorWords(p.fg.shown)} #${p.fg.shown} on ${p.bg.shown === p.pageBg ? "" : `${colorWords(p.bg.shown)} `}#${p.bg.shown}`;
+  const isUi = p.kind === "ui";
+  const bad = isUi ? "too faint" : p.ratio < 3 ? "hard to read" : "harder to read than it should be";
+  const rule = isUi ? "Borders, icons and focus rings need at least 3:1" : p.kind === "large" ? "Large text (24px, or 19px bold) needs at least 3:1" : "Text needs at least 4.5:1";
+  const who = isUi ? t.shape === "focus" ? "Keyboard users may not see where they are on the page." : /field|search|box|drop-down|check/.test(t.what) ? `People with low vision may not see where the ${t.name || "field"} is or where to type.` : "People with low vision may not see it." : "People with low vision, or on a phone in sunlight, may not be able to read it.";
+  const base = {
+    subject: Subject,
+    shape: t.shape,
+    title: p.kind === "decor" ? `${Subject}: decoration, no minimum` : p.pass === false ? `${Subject} ${plural ? "are" : "is"} ${bad}` : p.pass ? `${Subject}: ${p.ratio >= p.need + 0.5 ? "clear" : "just clear enough"}` : `${Subject}: not judged`,
+    where: [t.where, t.when].filter(Boolean).join(", ") || null,
+    colors: swatches
+  };
+  if (p.pass !== false || p.kind === "decor") return { ...base, what: null, why: null, fix: null };
+  base.what = `The ${subject}${t.when ? ` (${t.when})` : ""} ${plural ? "are" : "is"} ${colorWords(p.fg.shown)} (#${p.fg.shown}) on ${bgWords} (#${p.bg.shown}). The two are only ${p.ratio}:1 apart.`;
+  base.why = `${who} ${rule}; ${plural ? "these are" : "this one is"} ${p.ratio}:1.`;
+  if (fix) {
+    const prop = propOf(part, fix.side);
+    const isVar = /^(--|\$|@)/.test(fix.name);
+    const css = isVar ? `${fix.name}: #${fix.to};` : `${fromRule ? p.selector.split(/,(?![^(]*\))/)[0].trim() : fix.side === "bg" ? "body" : "a"} { ${prop}: #${fix.to}; }`;
+    base.fix = {
+      side: fix.side,
+      name: fix.name,
+      from: fix.from,
+      to: fix.to,
+      ratio: fix.ratio,
+      css,
+      text: `Make the ${fix.side === "bg" ? "background" : part === "color" ? t.shape === "link" ? "link color" : "text color" : part === "outline" ? "focus ring" : "border"} a little ${lighterOrDarker(fix.from, fix.to)}: #${fix.from} \u2192 #${fix.to}, the nearest shade of the same color that passes (${fix.ratio}:1).${isVar ? ` It is set once, as ${fix.name}, so every place that uses it is fixed too.` : ""}`
+    };
+  } else base.fix = null;
+  return base;
+}
+function plainSummary(r2) {
+  const judged = r2.pairs.filter((p) => p.kind !== "decor" && !p.optional);
+  const fail2 = judged.filter((p) => p.pass === false).sort((a, b) => a.ratio / a.need - b.ratio / b.need);
+  const seen = /* @__PURE__ */ new Set(), top = [];
+  for (const p of fail2) {
+    const k3 = p.plain?.title;
+    if (k3 && !seen.has(k3)) {
+      seen.add(k3);
+      top.push(k3);
+    }
+  }
+  const n = judged.length;
+  const text2 = !n ? "No color combinations to judge." : fail2.length ? `We checked ${n} color ${n === 1 ? "combination" : "combinations"}. ${fail2.length === 1 ? "1 is" : `${fail2.length} are`} too low in contrast: people with low vision, or on a phone in bright light, may not be able to see ${fail2.length === 1 ? "it" : "them"}.` : `We checked ${n} color ${n === 1 ? "combination" : "combinations"}, and all of them are clear enough to read and see.`;
+  return { text: text2, top: top.slice(0, 5) };
+}
+
 // cli/src/engine/check.js
 var okDist2 = differenceEuclidean("oklab");
 var toOklch = converter_default("oklch");
@@ -3740,7 +3902,7 @@ function plan(read, opts = {}) {
   };
   const rank = (k3) => ({ text: 3, large: 2, ui: 1, decor: 0 })[k3] ?? 0;
   const pairsLater = [];
-  const pageSkip = /* @__PURE__ */ new Set(), pageImage = /* @__PURE__ */ new Set(), pageEmpty = /* @__PURE__ */ new Set();
+  const pageSkip = /* @__PURE__ */ new Set(), pageImage = /* @__PURE__ */ new Set(), pageEmpty = /* @__PURE__ */ new Set(), pageBgs = {};
   const byName = new Map(tokens.map((t) => [`${t.name}|${t.mode}`, t]));
   const canon = (t) => {
     let x = t, n = 0;
@@ -3781,6 +3943,7 @@ function plan(read, opts = {}) {
       dflt.span = null;
       pairsLater.push([dflt, main2]);
     }
+    if (main2) pageBgs[mode] = main2.hex;
     const texts = all.filter((t) => t.role === "text");
     for (const [a, b] of pairsLater.splice(0)) add(a, b, "text", "the browser's default text on the page background", { selector: "body" });
     for (const r2 of modeRules.filter((x) => !(UTILITY.test(x.selector) && !(x.fg && x.bg)) && !(mode === "dark" && x.mode === "light" && ![x.fg, x.bg, x.border, x.outline].some((v) => v?.token)))) {
@@ -3880,7 +4043,7 @@ function plan(read, opts = {}) {
   }
   const inPair = new Set(pairs.flatMap((p) => [p.fg.name, p.bg.name, p.asFg, p.asBg]));
   const unchecked = [...new Set(tokens.filter((t) => !t.unnamed && !t.literal && !t.inherited && t.role !== "ignore" && t.role !== "scale" && !inPair.has(t.name) && !tokens.some((x) => x.via === t.name)).map((t) => t.name))];
-  return { tokens, pairs: pairs.slice(0, MAX_PAIRS), groups: groups2, modes: modes2, tooMany: pairs.length > MAX_PAIRS, unchecked, pageSkip: pageSkip.size, pageImage: pageImage.size, pageEmpty: pageEmpty.size };
+  return { tokens, pairs: pairs.slice(0, MAX_PAIRS), groups: groups2, modes: modes2, tooMany: pairs.length > MAX_PAIRS, unchecked, pageSkip: pageSkip.size, pageImage: pageImage.size, pageEmpty: pageEmpty.size, pageBgs };
 }
 var TEXT_UTILITY = /(^|[\s.:(*,>])\.?[\w\\:\[\]\.*-]*text-[\w\\/.!\[\]#-]+/;
 var baseSel = (sel) => String(sel).split(",")[0].trim().replace(/::?[\w-]+(\([^)]*\))?/g, "").trim();
@@ -3921,6 +4084,7 @@ function judge(p, target = "AA", apca2) {
     mode: p.mode,
     kind: p.kind,
     why: p.why,
+    ...p.selector ? { selector: p.selector } : {},
     ratio: ratio2,
     need,
     pass: ratio2 >= need,
@@ -4318,8 +4482,27 @@ function check(input, opts = {}) {
     feel: byMode,
     fix: { changes: fix.changes.map((c2) => ({ ...c2, span: c2.span || null, raw: c2.raw ?? null })), remaining: fix.remaining, text: fix.changes.length ? applied.text : null, diff: applied.diff, unwritten: applied.unwritten }
   };
+  for (const p of judged) {
+    p.pageBg = planned.pageBgs?.[p.mode] || null;
+    p.plain = explain(p, p.pass === false && !p.optional && p.kind !== "decor" ? pairFix(p, report.fix) : null);
+  }
   report.summary = summarize(report);
+  report.summary.plain = plainSummary(report);
   return report;
+}
+function pairFix(p, fix) {
+  const fgName = p.fg.source || p.fg.name, bgName = p.bg.source || p.bg.name;
+  const ratioWith = (fg, bg) => contrast2(over(fg, p.fg.alpha, bg), bg);
+  const c2 = fix.changes.find((x) => x.mode === p.mode && x.name === fgName) || fix.changes.find((x) => x.mode === p.mode && x.name === bgName);
+  if (c2) {
+    const side = c2.name === fgName ? "fg" : "bg";
+    const r2 = side === "fg" ? ratioWith(c2.to, p.bg.shown) : ratioWith(p.fg.hex, c2.to);
+    if (r2 >= p.need) return { side, name: c2.name, from: c2.from, to: c2.to, ratio: r2 };
+  }
+  const to = nearestL(p.fg.hex, (x) => ratioWith(x, p.bg.shown) >= p.need + 0.1);
+  if (to) return { side: "fg", name: fgName, from: p.fg.hex, to, ratio: ratioWith(to, p.bg.shown) };
+  const tb = nearestL(p.bg.shown, (x) => ratioWith(p.fg.hex, x) >= p.need + 0.1);
+  return tb ? { side: "bg", name: bgName, from: p.bg.shown, to: tb, ratio: ratioWith(p.fg.hex, tb) } : null;
 }
 function summarize(r2) {
   const judged = r2.pairs.filter((p) => p.kind !== "decor" && !p.optional);
@@ -4485,7 +4668,11 @@ function text(results, opts) {
       const at = whereOf(group, r2, p);
       const fx = fixOf(r2, p);
       const where = /^https?:/.test(at.file) ? (p.why || "").replace(/ sets .*$/, "") : `${rel(at.file)}:${at.line}`;
-      out.push(`  ${C2.r}\u2717${C2.x} ${p.fg.name} on ${p.bg.name}${r2.input.modes.length > 1 ? ` [${p.mode}]` : ""}: ${C2.b}${p.ratio}:1${C2.x}, needs ${p.need}:1 (${p.kind})  ${C2.d}${where}${C2.x}${fx ? `
+      const pl = p.plain || {};
+      out.push(`  ${C2.r}\u2717${C2.x} ${C2.b}${pl.title || `${p.fg.name} on ${p.bg.name}`}${C2.x}${r2.input.modes.length > 1 ? ` [${p.mode}]` : ""}: #${p.fg.shown} on #${p.bg.shown}, ${C2.b}${p.ratio}:1${C2.x}, needs ${p.need}:1  ${C2.d}${where}${C2.x}${pl.why ? `
+      ${pl.why}` : ""}${pl.fix ? `
+      ${C2.g}fix:${C2.x} ${pl.fix.text}
+      ${C2.g}${pl.fix.css}${C2.x}` : fx ? `
       ${C2.g}fix:${C2.x} ${fx}` : ""}`);
     }
     for (const c2 of lookAlike(r2)) out.push(`  ${C2.y}!${C2.x} ${c2.a.name} and ${c2.b.name} look alike with ${c2.worst.label.toLowerCase()} (\u0394E ${c2.worst.d})`);
@@ -4503,13 +4690,17 @@ function markdown(results) {
   const out = ["## Color check", ""];
   for (const { group, report: r2 } of results) {
     const f2 = failing(r2);
-    out.push(`### ${rel(group.label)}: ${f2.length ? `\u274C ${r2.summary.fail} failing` : "\u2705 all pass"} (${r2.standard})`, "", r2.summary.text, "");
+    out.push(`### ${rel(group.label)}: ${f2.length ? `\u274C ${r2.summary.fail} failing` : "\u2705 all pass"} (${r2.standard})`, "", r2.summary.plain?.text || r2.summary.text, "");
     if (f2.length) {
-      out.push("| Text | Background | Mode | Contrast | Needs | Where | Fix |", "|---|---|---|---|---|---|---|");
+      out.push("| What | Colors | Mode | Contrast | Needs | Where | Fix |", "|---|---|---|---|---|---|---|");
+      const cell = (x) => String(x).replace(/\|/g, "/");
       for (const p of f2) {
         const at = whereOf(group, r2, p);
-        out.push(`| \`${p.fg.name}\` | \`${p.bg.name}\` | ${p.mode} | ${p.ratio}:1 | ${p.need}:1 | ${/^https?:/.test(at.file) ? `\`${(p.why || "").replace(/ sets .*$/, "").replace(/\|/g, "/")}\`` : `${rel(at.file)}:${at.line}`} | ${fixOf(r2, p) || "\u2013"} |`);
+        const pl = p.plain || {};
+        out.push(`| ${cell(pl.title || "\u2013")} | \`#${p.fg.shown}\` on \`#${p.bg.shown}\` ${p.fg.name === "#" + p.fg.shown && p.bg.name === "#" + p.bg.shown ? "" : `(\`${cell(p.fg.name)}\` on \`${cell(p.bg.name)}\`)`} | ${p.mode} | ${p.ratio}:1 | ${p.need}:1 | ${/^https?:/.test(at.file) ? `\`${cell((p.why || "").replace(/ sets .*$/, ""))}\`` : `${rel(at.file)}:${at.line}`} | ${pl.fix ? `\`${cell(pl.fix.css)}\`` : fixOf(r2, p) || "\u2013"} |`);
       }
+      out.push("");
+      for (const p of f2.filter((x) => x.plain?.why)) out.push(`- **${p.plain.title}.** ${p.plain.why}${p.plain.fix ? ` ${p.plain.fix.text}` : ""}`);
       out.push("");
     }
     if (r2.fix.diff) out.push("<details><summary>The fix as a diff</summary>", "", "```diff", r2.fix.diff.trim(), "```", "", "</details>", "");
@@ -4525,7 +4716,7 @@ function github(results) {
     for (const p of failing(r2)) {
       const at = whereOf(group, r2, p), fx = fixOf(r2, p);
       const loc = /^https?:/.test(at.file) ? "" : `file=${escP(rel(at.file))},line=${at.line},col=${at.column},`;
-      out.push(`::error ${loc}title=${escP(`Contrast ${p.ratio}:1 (needs ${p.need}:1)`)}::${esc(`${p.fg.name} on ${p.bg.name}${r2.input.modes.length > 1 ? ` (${p.mode} mode)` : ""}${loc ? "" : ` at ${(p.why || "").replace(/ sets .*$/, "")}`} is ${p.ratio}:1; ${p.kind === "ui" ? "UI parts need 3:1 (WCAG 1.4.11)" : `text needs ${p.need}:1 (WCAG 1.4.3)`}.${fx ? ` Nearest passing: ${fx}.` : ""}`)}`);
+      out.push(`::error ${loc}title=${escP(p.plain?.title ? `${p.plain.title}: ${p.ratio}:1, needs ${p.need}:1` : `Contrast ${p.ratio}:1 (needs ${p.need}:1)`)}::${esc(`${p.plain?.why ? `${p.plain.why} ${p.plain.fix ? `Fix: ${p.plain.fix.css} ` : ""}` : ""}${p.fg.name} on ${p.bg.name}${r2.input.modes.length > 1 ? ` (${p.mode} mode)` : ""}${loc ? "" : ` at ${(p.why || "").replace(/ sets .*$/, "")}`} is ${p.ratio}:1; ${p.kind === "ui" ? "UI parts need 3:1 (WCAG 1.4.11)" : `text needs ${p.need}:1 (WCAG 1.4.3)`}.${fx ? ` Nearest passing: ${fx}.` : ""}`)}`);
     }
     for (const c2 of lookAlike(r2)) out.push(`::warning title=Colors look alike::${esc(`${c2.a.name} and ${c2.b.name} look alike with ${c2.worst.label.toLowerCase()} (\u0394E ${c2.worst.d}). Do not let color alone tell them apart (WCAG 1.4.1).`)}`);
   }
@@ -4544,7 +4735,7 @@ function sarif(results, version) {
       res.push({
         ruleId: p.kind === "ui" ? "contrast-ui" : "contrast-text",
         level: "error",
-        message: { text: `${p.fg.name} on ${p.bg.name}${r2.input.modes.length > 1 ? ` (${p.mode} mode)` : ""}: ${p.ratio}:1, needs ${p.need}:1.${fx ? ` Nearest passing: ${fx}.` : ""}` },
+        message: { text: `${p.plain?.title ? `${p.plain.title}. ${p.plain.why} ${p.plain.fix ? `${p.plain.fix.text} ` : ""}(` : ""}${p.fg.name} on ${p.bg.name}${r2.input.modes.length > 1 ? ` (${p.mode} mode)` : ""}: ${p.ratio}:1, needs ${p.need}:1.${fx ? ` Nearest passing: ${fx}.` : ""}${p.plain?.title ? ")" : ""}` },
         locations: [{ physicalLocation: { artifactLocation: { uri: rel(at.file) }, region: { startLine: at.line, startColumn: at.column } } }],
         partialFingerprints: { pair: `${p.fg.name}|${p.bg.name}|${p.mode}` }
       });

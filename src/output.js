@@ -32,7 +32,8 @@ export function text(results, opts) {
       const fx = fixOf(r, p);
       // a rendered page has no file lines: the element is the place to look
       const where = /^https?:/.test(at.file) ? (p.why || '').replace(/ sets .*$/, '') : `${rel(at.file)}:${at.line}`;
-      out.push(`  ${C.r}✗${C.x} ${p.fg.name} on ${p.bg.name}${r.input.modes.length > 1 ? ` [${p.mode}]` : ''}: ${C.b}${p.ratio}:1${C.x}, needs ${p.need}:1 (${p.kind})  ${C.d}${where}${C.x}${fx ? `\n      ${C.g}fix:${C.x} ${fx}` : ''}`);
+      const pl = p.plain || {};
+      out.push(`  ${C.r}✗${C.x} ${C.b}${pl.title || `${p.fg.name} on ${p.bg.name}`}${C.x}${r.input.modes.length > 1 ? ` [${p.mode}]` : ''}: #${p.fg.shown} on #${p.bg.shown}, ${C.b}${p.ratio}:1${C.x}, needs ${p.need}:1  ${C.d}${where}${C.x}${pl.why ? `\n      ${pl.why}` : ''}${pl.fix ? `\n      ${C.g}fix:${C.x} ${pl.fix.text}\n      ${C.g}${pl.fix.css}${C.x}` : fx ? `\n      ${C.g}fix:${C.x} ${fx}` : ''}`);
     }
     for (const c of lookAlike(r)) out.push(`  ${C.y}!${C.x} ${c.a.name} and ${c.b.name} look alike with ${c.worst.label.toLowerCase()} (ΔE ${c.worst.d})`);
     if (opts.verbose) for (const p of r.pairs.filter((x) => x.pass)) out.push(`  ${C.g}✓${C.x} ${p.fg.name} on ${p.bg.name}${r.input.modes.length > 1 ? ` [${p.mode}]` : ''}: ${p.ratio}:1`);
@@ -51,10 +52,13 @@ export function markdown(results) {
   const out = ['## Color check', ''];
   for (const { group, report: r } of results) {
     const f = failing(r);
-    out.push(`### ${rel(group.label)}: ${f.length ? `❌ ${r.summary.fail} failing` : '✅ all pass'} (${r.standard})`, '', r.summary.text, '');
+    out.push(`### ${rel(group.label)}: ${f.length ? `❌ ${r.summary.fail} failing` : '✅ all pass'} (${r.standard})`, '', r.summary.plain?.text || r.summary.text, '');
     if (f.length) {
-      out.push('| Text | Background | Mode | Contrast | Needs | Where | Fix |', '|---|---|---|---|---|---|---|');
-      for (const p of f) { const at = whereOf(group, r, p); out.push(`| \`${p.fg.name}\` | \`${p.bg.name}\` | ${p.mode} | ${p.ratio}:1 | ${p.need}:1 | ${/^https?:/.test(at.file) ? `\`${(p.why || '').replace(/ sets .*$/, '').replace(/\|/g, '/')}\`` : `${rel(at.file)}:${at.line}`} | ${fixOf(r, p) || '–'} |`); }
+      out.push('| What | Colors | Mode | Contrast | Needs | Where | Fix |', '|---|---|---|---|---|---|---|');
+      const cell = (x) => String(x).replace(/\|/g, '/');
+      for (const p of f) { const at = whereOf(group, r, p); const pl = p.plain || {}; out.push(`| ${cell(pl.title || '–')} | \`#${p.fg.shown}\` on \`#${p.bg.shown}\` ${p.fg.name === '#' + p.fg.shown && p.bg.name === '#' + p.bg.shown ? '' : `(\`${cell(p.fg.name)}\` on \`${cell(p.bg.name)}\`)`} | ${p.mode} | ${p.ratio}:1 | ${p.need}:1 | ${/^https?:/.test(at.file) ? `\`${cell((p.why || '').replace(/ sets .*$/, ''))}\`` : `${rel(at.file)}:${at.line}`} | ${pl.fix ? `\`${cell(pl.fix.css)}\`` : fixOf(r, p) || '–'} |`); }
+      out.push('');
+      for (const p of f.filter((x) => x.plain?.why)) out.push(`- **${p.plain.title}.** ${p.plain.why}${p.plain.fix ? ` ${p.plain.fix.text}` : ''}`);
       out.push('');
     }
     if (r.fix.diff) out.push('<details><summary>The fix as a diff</summary>', '', '```diff', r.fix.diff.trim(), '```', '', '</details>', '');
@@ -72,7 +76,7 @@ export function github(results) {
     for (const p of failing(r)) {
       const at = whereOf(group, r, p), fx = fixOf(r, p);
       const loc = /^https?:/.test(at.file) ? '' : `file=${escP(rel(at.file))},line=${at.line},col=${at.column},`;
-      out.push(`::error ${loc}title=${escP(`Contrast ${p.ratio}:1 (needs ${p.need}:1)`)}::${esc(`${p.fg.name} on ${p.bg.name}${r.input.modes.length > 1 ? ` (${p.mode} mode)` : ''}${loc ? '' : ` at ${(p.why || '').replace(/ sets .*$/, '')}`} is ${p.ratio}:1; ${p.kind === 'ui' ? 'UI parts need 3:1 (WCAG 1.4.11)' : `text needs ${p.need}:1 (WCAG 1.4.3)`}.${fx ? ` Nearest passing: ${fx}.` : ''}`)}`);
+      out.push(`::error ${loc}title=${escP(p.plain?.title ? `${p.plain.title}: ${p.ratio}:1, needs ${p.need}:1` : `Contrast ${p.ratio}:1 (needs ${p.need}:1)`)}::${esc(`${p.plain?.why ? `${p.plain.why} ${p.plain.fix ? `Fix: ${p.plain.fix.css} ` : ''}` : ''}${p.fg.name} on ${p.bg.name}${r.input.modes.length > 1 ? ` (${p.mode} mode)` : ''}${loc ? '' : ` at ${(p.why || '').replace(/ sets .*$/, '')}`} is ${p.ratio}:1; ${p.kind === 'ui' ? 'UI parts need 3:1 (WCAG 1.4.11)' : `text needs ${p.need}:1 (WCAG 1.4.3)`}.${fx ? ` Nearest passing: ${fx}.` : ''}`)}`);
     }
     for (const c of lookAlike(r)) out.push(`::warning title=Colors look alike::${esc(`${c.a.name} and ${c.b.name} look alike with ${c.worst.label.toLowerCase()} (ΔE ${c.worst.d}). Do not let color alone tell them apart (WCAG 1.4.1).`)}`);
   }
@@ -90,7 +94,7 @@ export function sarif(results, version) {
     for (const p of failing(r)) {
       const at = whereOf(group, r, p), fx = fixOf(r, p);
       res.push({ ruleId: p.kind === 'ui' ? 'contrast-ui' : 'contrast-text', level: 'error',
-        message: { text: `${p.fg.name} on ${p.bg.name}${r.input.modes.length > 1 ? ` (${p.mode} mode)` : ''}: ${p.ratio}:1, needs ${p.need}:1.${fx ? ` Nearest passing: ${fx}.` : ''}` },
+        message: { text: `${p.plain?.title ? `${p.plain.title}. ${p.plain.why} ${p.plain.fix ? `${p.plain.fix.text} ` : ''}(` : ''}${p.fg.name} on ${p.bg.name}${r.input.modes.length > 1 ? ` (${p.mode} mode)` : ''}: ${p.ratio}:1, needs ${p.need}:1.${fx ? ` Nearest passing: ${fx}.` : ''}${p.plain?.title ? ')' : ''}` },
         locations: [{ physicalLocation: { artifactLocation: { uri: rel(at.file) }, region: { startLine: at.line, startColumn: at.column } } }],
         partialFingerprints: { pair: `${p.fg.name}|${p.bg.name}|${p.mode}` } });
     }

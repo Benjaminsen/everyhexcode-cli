@@ -6,6 +6,7 @@
 import { converter, differenceEuclidean, filterDeficiencyDeuter, filterDeficiencyProt, filterDeficiencyTrit, formatHex, parse as cparse, toGamut, wcagContrast, wcagLuminance } from 'culori/fn';
 import { contrast, cvd, info, moods, textOn } from './color.js';
 import { readInput } from './check-input.js';
+import { explain, plainSummary } from './plain.js';
 
 const okDist = differenceEuclidean('oklab');
 const toOklch = converter('oklch');
@@ -205,7 +206,7 @@ export function plan(read, opts = {}) {
   };
   const rank = (k) => ({ text: 3, large: 2, ui: 1, decor: 0 })[k] ?? 0;
   const pairsLater = [];
-  const pageSkip = new Set(), pageImage = new Set(), pageEmpty = new Set();
+  const pageSkip = new Set(), pageImage = new Set(), pageEmpty = new Set(), pageBgs = {};
   const byName = new Map(tokens.map((t) => [`${t.name}|${t.mode}`, t]));
   const canon = (t) => { let x = t, n = 0; while (x.via && n++ < 8) { const y = byName.get(`${x.via}|${x.mode}`) || byName.get(`${x.via}|light`); if (!y || y === x || y.role === 'ignore' || isPalette(y)) break; x = y; } return x; };
 
@@ -240,6 +241,7 @@ export function plan(read, opts = {}) {
       dflt.name = mode === 'dark' ? 'default text (white)' : 'default text (black)'; dflt.span = null;
       pairsLater.push([dflt, main]);
     }
+    if (main) pageBgs[mode] = main.hex;
     const texts = all.filter((t) => t.role === 'text');
     // 1. CSS rules: what a selector really sets
     for (const [a, b] of pairsLater.splice(0)) add(a, b, 'text', "the browser's default text on the page background", { selector: 'body' });
@@ -336,7 +338,7 @@ export function plan(read, opts = {}) {
   // colours with a name but no role and in no pair: listed, so nothing is skipped without saying so
   const inPair = new Set(pairs.flatMap((p) => [p.fg.name, p.bg.name, p.asFg, p.asBg]));
   const unchecked = [...new Set(tokens.filter((t) => !t.unnamed && !t.literal && !t.inherited && t.role !== 'ignore' && t.role !== 'scale' && !inPair.has(t.name) && !tokens.some((x) => x.via === t.name)).map((t) => t.name))];
-  return { tokens, pairs: pairs.slice(0, MAX_PAIRS), groups, modes, tooMany: pairs.length > MAX_PAIRS, unchecked, pageSkip: pageSkip.size, pageImage: pageImage.size, pageEmpty: pageEmpty.size };
+  return { tokens, pairs: pairs.slice(0, MAX_PAIRS), groups, modes, tooMany: pairs.length > MAX_PAIRS, unchecked, pageSkip: pageSkip.size, pageImage: pageImage.size, pageEmpty: pageEmpty.size, pageBgs };
 }
 
 // a text-colour utility somewhere in a selector (Tailwind's .hover\:text-red-500, .text-neutral-400\!, variants)
@@ -383,7 +385,7 @@ export function judge(p, target = 'AA', apca) {
     // shown under the name the design uses (an alias), fixed at its source
     fg: { name: p.asFg || p.fg.name, hex: p.fg.hex, alpha: p.fg.alpha ?? 1, shown: fgHex, ...(p.asFg ? { source: p.fg.name } : {}) },
     bg: { name: p.asBg || p.bg.name, hex: p.bg.hex, alpha: p.bg.alpha ?? 1, shown: bgHex, ...(p.asBg ? { source: p.bg.name } : {}) },
-    mode: p.mode, kind: p.kind, why: p.why, ratio, need, pass: ratio >= need,
+    mode: p.mode, kind: p.kind, why: p.why, ...(p.selector ? { selector: p.selector } : {}), ratio, need, pass: ratio >= need,
     level: p.kind === 'ui' ? (ratio >= 3 ? 'meets 3:1' : 'under 3:1') : ratio >= 7 ? 'AAA' : ratio >= 4.5 ? 'AA' : ratio >= 3 ? 'AA large' : 'fail',
     margin: r1(ratio - need, 2),
   };
@@ -716,8 +718,30 @@ export function check(input, opts = {}) {
     feel: byMode,
     fix: { changes: fix.changes.map((c) => ({ ...c, span: c.span || null, raw: c.raw ?? null })), remaining: fix.remaining, text: fix.changes.length ? applied.text : null, diff: applied.diff, unwritten: applied.unwritten },
   };
+  // each pair in plain words, with the nearest passing colour for it
+  for (const p of judged) {
+    p.pageBg = planned.pageBgs?.[p.mode] || null;
+    p.plain = explain(p, p.pass === false && !p.optional && p.kind !== 'decor' ? pairFix(p, report.fix) : null);
+  }
   report.summary = summarize(report);
+  report.summary.plain = plainSummary(report);
   return report;
+}
+
+/** The nearest passing colour for one failing pair: the whole-palette fix where it moves one of the two, else the pair's own. */
+function pairFix(p, fix) {
+  const fgName = p.fg.source || p.fg.name, bgName = p.bg.source || p.bg.name;
+  const ratioWith = (fg, bg) => contrast(over(fg, p.fg.alpha, bg), bg);
+  const c = fix.changes.find((x) => x.mode === p.mode && x.name === fgName) || fix.changes.find((x) => x.mode === p.mode && x.name === bgName);
+  if (c) {
+    const side = c.name === fgName ? 'fg' : 'bg';
+    const r = side === 'fg' ? ratioWith(c.to, p.bg.shown) : ratioWith(p.fg.hex, c.to);
+    if (r >= p.need) return { side, name: c.name, from: c.from, to: c.to, ratio: r };
+  }
+  const to = nearestL(p.fg.hex, (x) => ratioWith(x, p.bg.shown) >= p.need + 0.1);
+  if (to) return { side: 'fg', name: fgName, from: p.fg.hex, to, ratio: ratioWith(to, p.bg.shown) };
+  const tb = nearestL(p.bg.shown, (x) => ratioWith(p.fg.hex, x) >= p.need + 0.1);
+  return tb ? { side: 'bg', name: bgName, from: p.bg.shown, to: tb, ratio: ratioWith(p.fg.hex, tb) } : null;
 }
 
 /** The plain-language top of a report, filled in from the numbers (a template, the same words every time). */
