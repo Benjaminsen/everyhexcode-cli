@@ -2941,7 +2941,7 @@ var LIGHT_SEL = /\.light\b|\[data-(?:theme|mode|color-scheme)=["']?light|prefers
 var MODE_ATTR = `\\[data-(?:[\\w-]*theme|mode|color-scheme)(?:=["']?(?:light|dark)["']?)?\\]`;
 var GLOBAL_PART = new RegExp(`^((:root|html|body|:host|\\*)?(${MODE_ATTR}|\\.(dark|light)(-theme|-mode)?|:not\\(\\.dark\\)|:not\\(\\.light\\)|:not\\(${MODE_ATTR}\\))*|:root|html|body|:host|\\*|\\.dark|\\.light)$`, "i");
 function isGlobalScope(prelude) {
-  const p = String(prelude || "").trim();
+  const p = String(prelude || "").trim().replace(/:(?:where|is)\(([^()]*)\)/g, "$1");
   if (!p || /^@(media|supports|layer|theme|container|document|scope)\b/i.test(p)) return true;
   if (p.startsWith("@")) return false;
   return p.split(",").some((x) => GLOBAL_PART.test(x.trim().replace(/\s+/g, " ")) || /^(:root|html)\s+(body)?$/.test(x.trim()));
@@ -2967,7 +2967,11 @@ function readCss(text2) {
   const tokens = [], rules = [];
   const stack = [];
   let i = 0, start = 0;
-  const mode = () => stack.some((p) => DARK_MEDIA.test(p) || DARK_SEL.test(p)) ? "dark" : "light";
+  const darkSel = (p) => {
+    const parts = String(p).split(",").map((x) => x.replace(/:not\((?:[^()]|\([^()]*\))*\)/g, ""));
+    return parts.every((x) => DARK_SEL.test(x));
+  };
+  const mode = () => stack.some((p) => DARK_MEDIA.test(p) || !p.startsWith("@") && darkSel(p)) ? "dark" : "light";
   const decls = [];
   const flushDecl = (from, to) => {
     const d = src.slice(from, to);
@@ -2982,7 +2986,7 @@ function readCss(text2) {
       ve -= imp[0].length;
     }
     if (stack.some((p) => /^@media\b[^{]*\bprint\b/i.test(p) && !/screen/i.test(p))) return;
-    decls.push({ prop: m[1], value: val, span: [vs, ve], depth: stack.length, prelude: stack[stack.length - 1] || "", global: stack.every(isGlobalScope), mode: mode(), scoped: stack.some((p) => LIGHT_SEL.test(p)), block: blockId });
+    decls.push({ supports: stack.some((p) => /^@supports\b/i.test(p)), prop: m[1], value: val, span: [vs, ve], depth: stack.length, prelude: stack[stack.length - 1] || "", global: stack.every(isGlobalScope), mode: mode(), scoped: stack.some((p) => LIGHT_SEL.test(p)), block: blockId });
   };
   let blockId = 0, blockSeq = 0;
   const blockStack = [];
@@ -3042,9 +3046,13 @@ function readCss(text2) {
   const vars = /* @__PURE__ */ new Map();
   const themeScopes = /* @__PURE__ */ new Set();
   const scoped = /* @__PURE__ */ new Map();
-  const keep = (t) => {
+  const keep = (t, d) => {
     const k3 = `${t.name}|${t.mode}`;
     const was = vars.get(k3);
+    if (was && d && d.supports) {
+      was.p3Copy = true;
+      return;
+    }
     if (was) was.dropped = true;
     vars.set(k3, t);
     tokens.push(t);
@@ -3069,7 +3077,7 @@ function readCss(text2) {
         if (!c2) continue;
         const at = d.span[0] + part.at;
         const tk = { name: d.prop, mode: m, raw: part.text, span: [at, at + part.text.length], format: formatOf(part.text), ...c2 };
-        keep(tk);
+        keep(tk, d);
       }
       continue;
     }
@@ -3087,7 +3095,7 @@ function readCss(text2) {
       if (!c2) continue;
       Object.assign(t, c2);
     } else continue;
-    keep(t);
+    keep(t, d);
   }
   for (let i2 = tokens.length - 1; i2 >= 0; i2--) if (tokens[i2].dropped) tokens.splice(i2, 1);
   const lookup = (name, m) => vars.get(`${name}|${m}`) || vars.get(`${name}|light`);
@@ -3418,7 +3426,11 @@ function readJson(text2) {
         const css = ["oklch", "oklab", "lab", "lch", "hwb"].includes(sp) ? `${sp}(${k3.join(" ")})` : sp === "hsl" ? `hsl(${k3[0]} ${k3[1]}% ${k3[2]}%)` : `color(${sp} ${k3.join(" ")})`;
         const c2 = v.hex ? readOne(v.hex) : readOne(css);
         const modeIdx = path5.findIndex((p) => MODE_WORD.test(p));
-        if (c2) tokens.push({ name: path5.filter((_, k4) => k4 !== modeIdx).join("."), ...c2, alpha: v.alpha ?? 1, mode: modeIdx >= 0 ? modeOfWord(path5[modeIdx]) : "light", raw: null, span: null, format: "hex" });
+        if (c2) {
+          const tk = { name: path5.filter((_, k4) => k4 !== modeIdx && !/^\$/.test(path5[k4])).join("."), ...c2, alpha: v.alpha ?? 1, mode: modeIdx >= 0 ? modeOfWord(path5[modeIdx]) : "light", raw: null, span: null, format: "hex" };
+          tokens.push(tk);
+          byName.set(`${tk.name}|${tk.mode}`, tk);
+        }
         return;
       }
       for (const [k3, x] of Object.entries(o)) if (!k3.startsWith("$")) walk2(x, [...path5, k3]);
@@ -3430,8 +3442,9 @@ function readJson(text2) {
     while (x && !x.hex && x.alias && n++ < 8) x = byName.get(`${x.alias}|${t.mode}`) || byName.get(`${x.alias}|light`);
     if (x?.hex && x !== t) Object.assign(t, { hex: x.hex, alpha: x.alpha, via: x.name });
   }
+  const unresolved = tokens.filter((t) => !t.hex && t.alias).length;
   if (converted) for (const t of tokens) t.span = null;
-  return { kind: dtcg ? "dtcg" : sd ? "style-dictionary" : "json", tokens: tokens.filter((t) => t.hex) };
+  return { kind: dtcg ? "dtcg" : sd ? "style-dictionary" : "json", tokens: tokens.filter((t) => t.hex), vars: unresolved, notes: unresolved ? [`${unresolved} ${unresolved === 1 ? "token points" : "tokens point"} to a color defined in another file, so ${unresolved === 1 ? "it was" : "they were"} not checked: check the token files together.`] : [] };
 }
 function readTailwind(text2) {
   const src = blankComments(text2);
@@ -3507,7 +3520,7 @@ function readInput(text2, max = 2e5) {
   let out;
   if (/^[{[]/.test(t)) {
     const j = readJson(t);
-    if (j) out = { kind: j.kind, tokens: j.tokens.map((x) => ({ ...x, span: x.span ? [x.span[0] + s.indexOf(t), x.span[1] + s.indexOf(t)] : null })), rules: [] };
+    if (j) out = { kind: j.kind, tokens: j.tokens.map((x) => ({ ...x, span: x.span ? [x.span[0] + s.indexOf(t), x.span[1] + s.indexOf(t)] : null })), rules: [], notes: j.notes, vars: j.vars };
   }
   if (!out && /(module\.exports|export\s+default|\bcolors\s*:\s*\{)/.test(s) && !/--[\w-]+\s*:/.test(s)) {
     out = { kind: "tailwind", ...readTailwind(s), rules: [] };
@@ -3555,6 +3568,7 @@ var PRIMITIVE = /(^|[.\-_/])(base|primitives?|palette|core|ref|ramps?|scales?|ra
 function roleOf(name) {
   const w = words(name);
   if (!w.length) return { role: null };
+  if (w.includes("disabled") || w.includes("inactive")) return { role: "ignore", why: "disabled: exempt from contrast" };
   if (PRIMITIVE.test(String(name).replace(/^(--|\$|@)/, "")) && !w.some((x) => ["on", "foreground", "fg", "text", "background", "bg", "surface", "border"].includes(x))) return { role: "scale", primitive: true };
   const has = (list) => w.some((x) => list.includes(x));
   const last = w[w.length - 1];
@@ -3672,6 +3686,8 @@ function plan(read, opts = {}) {
     fg = canon(fg);
     bg = canon(bg);
     if (fg === bg) return;
+    const last = (x) => words(x.name).at(-1);
+    if (fg.hex === bg.hex && COLOR_WORDS.test(last(fg) || "") && last(fg) === last(bg)) return;
     if (asFg !== fg) extra = { ...extra, asFg: asFg.name };
     if (asBg !== bg) extra = { ...extra, asBg: asBg.name };
     if (fg.hex === bg.hex && (fg.alpha ?? 1) === (bg.alpha ?? 1) && (extra.guess || extra.selector)) return;
@@ -3744,7 +3760,7 @@ function plan(read, opts = {}) {
         if (base && base !== t) add(t, base, "text", `${t.name} is named for ${base.name}`);
         if (main2 && base !== main2 && (!base || /muted|subtle|secondary|surface|card|popover|background/.test(t.on))) add(t, main2, "text", `${t.name} on the page background`, { guess: !base });
       } else if (main2) {
-        add(t, main2, "text", "text on the page background", { guess: true });
+        add(t, main2, "text", "text on the page background", { guess: !!(main2.literal || /lightness/.test(t.why || "")), generic: !/^(foreground|fg|text|ink|body|body-text|default|text-default|fg-default|text-primary)$/.test(words(t.name).join("-")) });
         if (bgs.length <= 6) {
           for (const b of bgs) if (b !== main2 && !hasOwnText(b, texts)) add(t, b, "text", `text on ${b.name}`);
         }
@@ -3754,14 +3770,14 @@ function plan(read, opts = {}) {
       if (!main2 || t === main2) continue;
       const own = texts.find((x) => x.on && (named2.get(x.on) === t || words(t.name).join("-") === x.on));
       if (own) {
-        if (t.status) add(t, main2, "text", "status colours are also text (error and warning messages)");
+        if (t.status) add(t, main2, "text", "if used as text (error and warning messages)", { optional: true });
         continue;
       }
-      add(t, main2, words(t.name).includes("link") || t.status ? "text" : "ui", words(t.name).includes("link") ? "links are text" : t.status ? "status text and icons" : "buttons, icons and accents on the background", { guess: true });
+      add(t, main2, words(t.name).includes("link") || t.status ? "text" : "ui", words(t.name).includes("link") ? "links are text" : t.status ? "status text and icons" : "buttons, icons and accents on the background", { guess: true, ...t.status && !words(t.name).includes("link") ? { optional: true } : {} });
       if (unnamed) for (const x of texts) add(x, t, "text", "text on an accent", { optional: true });
     }
     for (const t of all.filter((x) => x.role === "border" || x.role === "control")) if (main2) add(t, main2, t.role === "control" ? "ui" : "decor", t.role === "control" ? "input borders and focus rings (WCAG 1.4.11)" : "dividers and card edges (decoration)");
-    for (const t of all.filter((x) => x.role === "chart")) if (main2) add(t, main2, "ui", "chart colours on the background (WCAG 1.4.11)");
+    for (const t of all.filter((x) => x.role === "chart")) if (main2) add(t, main2, "ui", "chart colors on the background (WCAG 1.4.11)");
     if (unnamed) {
       for (const x of all) if (x.role === "text" && main2) add(x, main2, "text", "darkest on lightest");
     }
@@ -3826,7 +3842,7 @@ function judge(p, target = "AA", apca2) {
     ratio: ratio2,
     need,
     pass: ratio2 >= need,
-    level: ratio2 >= 7 ? "AAA" : ratio2 >= 4.5 ? "AA" : ratio2 >= 3 ? "AA large" : "fail",
+    level: p.kind === "ui" ? ratio2 >= 3 ? "meets 3:1" : "under 3:1" : ratio2 >= 7 ? "AAA" : ratio2 >= 4.5 ? "AA" : ratio2 >= 3 ? "AA large" : "fail",
     margin: r12(ratio2 - need, 2)
   };
   if (p.image) out.image = true;
@@ -3834,7 +3850,7 @@ function judge(p, target = "AA", apca2) {
     out.optional = true;
     out.pass = null;
   }
-  if (p.guess && ratio2 < 1.2) {
+  if ((p.guess || p.generic) && ratio2 < 1.2) {
     out.optional = true;
     out.pass = null;
     out.unknownBg = true;
@@ -3857,6 +3873,7 @@ function collisions(groups2) {
     const m = g.members.slice(0, 24);
     for (let i = 0; i < m.length; i++) for (let j = i + 1; j < m.length; j++) {
       const a = m[i], b = m[j];
+      if (a.hex === b.hex) continue;
       const normal = dE(a.hex, b.hex);
       const under = VISION.map((v) => ({ id: v.id, label: v.label, d: dE(seeAs(a.hex, v.id), seeAs(b.hex, v.id)) }));
       const low = (l) => l.reduce((x, y) => y.d < x.d ? y : x);
@@ -3925,7 +3942,7 @@ function feel(hexes) {
   const lightRange = r12(ls[ls.length - 1] - ls[0], 2);
   const steps = ls.filter((l, i) => !i || l - ls[i - 1] >= 0.08).length;
   const best = o.length >= 2 ? contrast2(o.reduce((a, b) => a.l > b.l ? a : b).hex, o.reduce((a, b) => a.l < b.l ? a : b).hex) : 21;
-  if (lightRange < 0.5 && o.length >= 2 && best < 4.5) notes.push({ kind: "flat", text: `The lightest and darkest colours are only ${Math.round(lightRange * 100)} points apart in lightness, so no pair will carry body text. Add a near-black or near-white.` });
+  if (lightRange < 0.5 && o.length >= 2 && best < 4.5) notes.push({ kind: "flat", text: `The lightest and darkest colors are only ${Math.round(lightRange * 100)} points apart in lightness, so no pair will carry body text. Add a near-black or near-white.` });
   else if (steps < Math.min(3, o.length)) notes.push({ kind: "steps", text: "Few distinct lightness steps: headings, text and surfaces will be hard to tell apart. Spread the lightness more." });
   const vib = [];
   for (let i = 0; i < chromatic.length; i++) for (let j = i + 1; j < chromatic.length; j++) {
@@ -3938,7 +3955,7 @@ function feel(hexes) {
     return x.c > 0.1 && toOklch(v).c > x.c * 1.3;
   });
   const muddy = o.filter((x) => x.l > 0.35 && x.l < 0.6 && x.c > 0.03 && x.c < 0.07 && x.h > 40 && x.h < 120);
-  if (muddy.length && muddy.length < o.length) notes.push({ kind: "muddy", text: `${muddy.map((x) => "#" + x.hex).join(", ")} ${muddy.length === 1 ? "sits" : "sit"} in the dull olive-brown band (mid lightness, low chroma, warm hue), which can read as dirty next to clean colours.` });
+  if (muddy.length && muddy.length < o.length) notes.push({ kind: "muddy", text: `${muddy.map((x) => "#" + x.hex).join(", ")} ${muddy.length === 1 ? "sits" : "sit"} in the dull olive-brown band (mid lightness, low chroma, warm hue), which can read as dirty next to clean colors.` });
   const neutrals = o.filter((x) => x.c <= 0.04).length;
   return {
     harmony,
@@ -3984,7 +4001,7 @@ function solve(planned, target = "AA", lock = [], opts = {}) {
   const margin = opts.margin ?? 0.1;
   const value = new Map(planned.tokens.map((t) => [t.id, t.hex]));
   const locked = new Set(lock.map(String));
-  const pairs = planned.pairs.filter((p) => p.kind !== "decor" && !p.optional && !p.image);
+  const pairs = planned.pairs.filter((p) => p.kind !== "decor" && !p.optional && !p.image && !((p.guess || p.generic) && contrast2(p.fg.hex, p.bg.hex) < 1.2));
   const shownBg = (p, v) => p.bg.alpha < 1 ? over(v.get(p.bg.id), p.bg.alpha, p.mode === "dark" ? "000000" : "ffffff") : v.get(p.bg.id);
   const ratioOf = (p, v = value) => {
     const bg = shownBg(p, v);
@@ -4014,11 +4031,11 @@ function solve(planned, target = "AA", lock = [], opts = {}) {
     const src = t.via && planned.tokens.find((x) => x.name === t.via && x.mode === t.mode) || planned.tokens.find((x) => x.name === t.via);
     if (!src || !isPalette(src)) return null;
     const stem = src.name.replace(/[-_.]?\d+$/, "");
-    if (stem === src.name) return null;
+    if (stem === src.name) return planned.tokens.filter((x) => x !== src && x.mode === src.mode && isPalette(x) && !x.via && dE(src.hex, x.hex) <= 25).map((x) => ({ x, src }));
     return planned.tokens.filter((x) => x !== src && x.mode === src.mode && x.name !== src.name && x.name.replace(/[-_.]?\d+$/, "") === stem && /\d+$/.test(x.name)).map((x) => ({ x, src }));
   };
   const movable = (t) => !t.inherited && !locked.has(t.name) && !locked.has(t.hex) && !locked.has("#" + t.hex) && !(isPalette(t) && planned.tokens.some((x) => x.via === t.name));
-  const moved = /* @__PURE__ */ new Map(), repoint = /* @__PURE__ */ new Map();
+  const moved = /* @__PURE__ */ new Map(), repoint = /* @__PURE__ */ new Map(), flipped = /* @__PURE__ */ new Set();
   for (let round2 = 0; round2 < 60; round2++) {
     const failing2 = pairs.filter((p) => !ok(p));
     if (!failing2.length) break;
@@ -4059,6 +4076,23 @@ function solve(planned, target = "AA", lock = [], opts = {}) {
     if (best.via) repoint.set(best.t.id, best.via);
     else repoint.delete(best.t.id);
   }
+  for (const p of pairs.filter((x) => !ok(x))) {
+    const f2 = byId.get(p.fg.id), b = byId.get(p.bg.id);
+    if (!f2 || !b || movable(b) || !movable(f2) || !f2.on) continue;
+    const all = ids(f2), mine = pairs.filter((x) => all.includes(x.fg.id) || all.includes(x.bg.id));
+    const prev = value.get(f2.id);
+    const best = ["000000", "ffffff", prev].map((seed) => nearestL(seed, (x) => {
+      setAll(f2, x);
+      const r2 = mine.every((q) => ok(q, value, q === p ? margin : 0));
+      setAll(f2, prev);
+      return r2;
+    })).filter(Boolean).sort((a, c2) => dE(prev, a) - dE(prev, c2))[0];
+    if (best) {
+      setAll(f2, best);
+      moved.set(f2.id, f2);
+      flipped.add(f2.id);
+    }
+  }
   const changes = [...moved.values()].map((t) => ({
     name: t.name,
     mode: t.mode,
@@ -4071,7 +4105,8 @@ function solve(planned, target = "AA", lock = [], opts = {}) {
     format: t.format,
     alpha: t.alpha,
     ...repoint.get(t.id) ? { repoint: repoint.get(t.id) } : {},
-    ...copies.get(t.id) ? { alsoDark: true } : {}
+    ...copies.get(t.id) ? { alsoDark: true } : {},
+    ...flipped.has(t.id) ? { flipped: true } : {}
   })).filter((c2) => c2.from !== c2.to);
   const why = (p) => {
     const f2 = byId.get(p.fg.id), b = byId.get(p.bg.id);
@@ -4250,6 +4285,7 @@ function walk(dir, out, root) {
 }
 function expand(args, cwd = process.cwd()) {
   const out = [];
+  const named2 = /* @__PURE__ */ new Set();
   for (const a of args.length ? args : ["."]) {
     if (/[*?]/.test(a)) {
       const base = a.slice(0, a.search(/[*?]/)).replace(/[^/]*$/, "") || ".";
@@ -4270,11 +4306,14 @@ function expand(args, cwd = process.cwd()) {
       throw new Error(`No such file or folder: ${a}`);
     }
     if (st.isDirectory()) walk(p, out, cwd);
-    else out.push(p);
+    else {
+      out.push(p);
+      named2.add(p);
+    }
   }
   const keep = (f2) => !/\.(js|cjs|mjs|ts)$/i.test(f2) || CONFIG_JS.test(f2);
   const jsonOk = (f2) => !/\.json$/i.test(f2) || !/(^|[/\\])(package(-lock)?|tsconfig[\w.-]*|jsconfig|composer|manifest|\.?eslintrc[\w.-]*|renovate|turbo|vercel|firebase|app)\.json$/i.test(f2);
-  return [...new Set(out)].filter((f2) => keep(f2) && jsonOk(f2)).sort();
+  return [...new Set(out)].filter((f2) => named2.has(f2) || keep(f2) && jsonOk(f2)).sort();
 }
 var skipped = [];
 function groups(files, read = (f2) => fs.readFileSync(f2, "utf8")) {
@@ -4338,7 +4377,7 @@ var fixOf = (r2, p) => r2.fix.changes.filter((c2) => c2.mode === p.mode && (c2.n
 function text(results, opts) {
   const out = [];
   for (const { group, report: r2 } of results) {
-    out.push(`${C2.b}${rel(group.label)}${C2.x} ${C2.d}(${r2.input.kind}, ${r2.input.colors} colors${r2.input.modes.length > 1 ? ", light and dark" : ""})${C2.x}`);
+    out.push(`${C2.b}${rel(group.label)}${C2.x} ${C2.d}(${r2.input.kind}, ${r2.input.colors} ${r2.input.colors === 1 ? "color" : "colors"}${r2.input.modes.length > 1 ? ", light and dark" : ""})${C2.x}`);
     const f2 = failing(r2);
     for (const p of f2) {
       const at = whereOf(group, r2, p);
@@ -4350,7 +4389,7 @@ function text(results, opts) {
     for (const c2 of lookAlike(r2)) out.push(`  ${C2.y}!${C2.x} ${c2.a.name} and ${c2.b.name} look alike with ${c2.worst.label.toLowerCase()} (\u0394E ${c2.worst.d})`);
     if (opts.verbose) for (const p of r2.pairs.filter((x) => x.pass)) out.push(`  ${C2.g}\u2713${C2.x} ${p.fg.name} on ${p.bg.name}${r2.input.modes.length > 1 ? ` [${p.mode}]` : ""}: ${p.ratio}:1`);
     out.push(`  ${f2.length ? C2.r : C2.g}${r2.summary.pass} pass, ${r2.summary.fail} fail${C2.x} against ${r2.standard}${r2.input.warnings.length ? `  ${C2.y}${r2.input.warnings.join(" ")}${C2.x}` : ""}`);
-    if (r2.fix.remaining.length) out.push(`  ${C2.y}${r2.fix.remaining.length} pair(s) need both colors to move.${C2.x}`);
+    if (r2.fix.remaining.length) out.push(`  ${C2.y}${r2.fix.remaining.length} ${r2.fix.remaining.length === 1 ? "pair has" : "pairs have"} no single-color fix: ${r2.fix.remaining.slice(0, 2).map((x) => `${x.fg} on ${x.bg}: ${x.reason}`).join("; ")}.${C2.x}`);
     out.push("");
   }
   return out.join("\n");
@@ -4946,6 +4985,7 @@ function exitCode(results, failOn) {
 }
 function writeBack(group, report) {
   const written = [];
+  if (group.merged) return written;
   for (const part of group.parts) {
     const mine = report.fix.changes.filter((c2) => c2.span && c2.span[0] >= part.start && c2.span[1] <= part.end).map((c2) => ({ ...c2, span: [c2.span[0] - part.start, c2.span[1] - part.start] }));
     if (!mine.length) continue;
@@ -5001,7 +5041,30 @@ ${s.notes.map((n) => `Note: ${n}
     console.error("No CSS, SCSS, Less, token or Tailwind config files found.");
     return 2;
   }
-  const results = groups(files).map((group) => ({ group, report: check(group.text, { ...opts, label: path4.basename(group.label) }) })).filter(({ report }) => report.input.colors);
+  let results = groups(files).map((group) => ({ group, report: check(group.text, { ...opts, label: path4.basename(group.label) }) }));
+  const tokenJson = results.filter(({ group }) => /\.json5?$/i.test(group.label));
+  if (tokenJson.length > 1 && tokenJson.some(({ report }) => report.input.warnings.some((w) => /another file/.test(w)))) {
+    const merge = (a2, b) => {
+      for (const [k3, v] of Object.entries(b)) a2[k3] = v && typeof v === "object" && !Array.isArray(v) && a2[k3] && typeof a2[k3] === "object" ? merge(a2[k3], v) : v;
+      return a2;
+    };
+    let all = {};
+    for (const { group: group2 } of tokenJson) {
+      try {
+        all = merge(all, JSON.parse(group2.text));
+      } catch {
+        try {
+          all = merge(all, JSON.parse(json5(group2.text)));
+        } catch {
+        }
+      }
+    }
+    const text2 = JSON.stringify(all, null, 2);
+    const group = { label: `${tokenJson.length} token files together`, text: text2, parts: [{ file: tokenJson[0].group.parts[0].file, start: 0, end: text2.length, text: text2 }], merged: true };
+    results = [...results.filter((x) => !tokenJson.includes(x)), { group, report: check(text2, { ...opts, label: "tokens" }) }];
+  }
+  for (const { group, report } of results) if (!report.input.colors && report.input.warnings.length) console.error(`${path4.relative(process.cwd(), group.label) || group.label}: ${report.input.warnings.join(" ")}`);
+  results = results.filter(({ report }) => report.input.colors);
   for (const x of skipped) console.error(`everyhexcode: skipped ${x}`);
   if (!results.length) {
     console.error(`No colors found in ${files.length} file(s)${skipped.length ? ` (${skipped.length} skipped)` : ""}: nothing to check.`);
@@ -5009,7 +5072,7 @@ ${s.notes.map((n) => `Note: ${n}
   }
   if (cmd === "fix" && a.write) {
     const lines = results.flatMap(({ group, report }) => writeBack(group, report));
-    const unwritten = results.flatMap(({ report }) => report.fix.changes.filter((c2) => !c2.span).map((c2) => `${c2.name}${report.input.modes.length > 1 ? ` (${c2.mode})` : ""}: #${c2.from} \u2192 #${c2.to}`));
+    const unwritten = results.flatMap(({ group, report }) => report.fix.changes.filter((c2) => !c2.span || group.merged).map((c2) => `${c2.name}${report.input.modes.length > 1 ? ` (${c2.mode})` : ""}: #${c2.from} \u2192 #${c2.to}`));
     console.log(lines.length ? `Changed:
 ${lines.map((l) => "  " + l).join("\n")}` : unwritten.length ? "No file text to change." : "Nothing to change.");
     if (unwritten.length) console.log(`Change these where they are defined (they have no value in the file text):

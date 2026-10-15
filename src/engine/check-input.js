@@ -87,7 +87,7 @@ const LIGHT_SEL = /\.light\b|\[data-(?:theme|mode|color-scheme)=["']?light|prefe
 const MODE_ATTR = '\\[data-(?:[\\w-]*theme|mode|color-scheme)(?:=["\']?(?:light|dark)["\']?)?\\]';
 const GLOBAL_PART = new RegExp(`^((:root|html|body|:host|\\*)?(${MODE_ATTR}|\\.(dark|light)(-theme|-mode)?|:not\\(\\.dark\\)|:not\\(\\.light\\)|:not\\(${MODE_ATTR}\\))*|:root|html|body|:host|\\*|\\.dark|\\.light)$`, 'i');
 export function isGlobalScope(prelude) {
-  const p = String(prelude || '').trim();
+  const p = String(prelude || '').trim().replace(/:(?:where|is)\(([^()]*)\)/g, '$1');
   if (!p || /^@(media|supports|layer|theme|container|document|scope)\b/i.test(p)) return true;
   if (p.startsWith('@')) return false;
   // a list that includes the root (":root, :root:has(…), [data-theme=light]") applies to the page: it is global
@@ -107,7 +107,10 @@ export function readCss(text) {
   const tokens = [], rules = [];
   const stack = []; // preludes of the open blocks
   let i = 0, start = 0;
-  const mode = () => (stack.some((p) => DARK_MEDIA.test(p) || DARK_SEL.test(p)) ? 'dark' : 'light');
+  // dark when a block says dark: a dark media query, or every selector of the list naming dark outside a :not()
+  // (":root:not([data-theme=dark]), [data-theme=light]" is light)
+  const darkSel = (p) => { const parts = String(p).split(',').map((x) => x.replace(/:not\((?:[^()]|\([^()]*\))*\)/g, '')); return parts.every((x) => DARK_SEL.test(x)); };
+  const mode = () => (stack.some((p) => DARK_MEDIA.test(p) || (!p.startsWith('@') && darkSel(p))) ? 'dark' : 'light');
   const decls = [];
   const flushDecl = (from, to) => {
     const d = src.slice(from, to);
@@ -119,7 +122,7 @@ export function readCss(text) {
     const imp = val.match(/\s*!(?:important|default|global)\s*$/i);
     if (imp) { val = val.slice(0, -imp[0].length); ve -= imp[0].length; }
     if (stack.some((p) => /^@media\b[^{]*\bprint\b/i.test(p) && !/screen/i.test(p))) return; // print styles never reach a screen
-    decls.push({ prop: m[1], value: val, span: [vs, ve], depth: stack.length, prelude: stack[stack.length - 1] || '', global: stack.every(isGlobalScope), mode: mode(), scoped: stack.some((p) => LIGHT_SEL.test(p)), block: blockId });
+    decls.push({ supports: stack.some((p) => /^@supports\b/i.test(p)), prop: m[1], value: val, span: [vs, ve], depth: stack.length, prelude: stack[stack.length - 1] || '', global: stack.every(isGlobalScope), mode: mode(), scoped: stack.some((p) => LIGHT_SEL.test(p)), block: blockId });
   };
   let blockId = 0, blockSeq = 0; const blockStack = [];
   let quote = null, paren = 0;
@@ -152,7 +155,13 @@ export function readCss(text) {
   const vars = new Map(); // name|mode → token
   const themeScopes = new Set();
   const scoped = new Map(); // block|name → raw value, for var() inside that component's own rules
-  const keep = (t) => { const k = `${t.name}|${t.mode}`; const was = vars.get(k); if (was) was.dropped = true; vars.set(k, t); tokens.push(t); };
+  const keep = (t, d) => {
+    const k = `${t.name}|${t.mode}`; const was = vars.get(k);
+    // a wide-gamut copy inside @supports (color(display-p3 …)) is the same colour for capable screens: the sRGB value stays
+    // the one checked and fixed, and the copy is noted so it can be changed too
+    if (was && d && d.supports) { was.p3Copy = true; return; }
+    if (was) was.dropped = true; vars.set(k, t); tokens.push(t);
+  };
   for (const d of decls) {
     if (d.prop.startsWith('--tw-')) continue; // Tailwind's internal variables (ring offsets, gradients stops), not the design's colours
     const isVar = d.prop.startsWith('--') || ((d.prop.startsWith('$') || (d.prop.startsWith('@') && !/^@(media|supports|import|font-face|keyframes|layer|theme|container|tailwind|apply|use|forward|include|mixin|function|return|if|else|each|for|while|charset|namespace|page)$/.test(d.prop))) && d.depth <= 1);
@@ -170,7 +179,7 @@ export function readCss(text) {
         if (!c) continue;
         const at = d.span[0] + part.at;
         const tk = { name: d.prop, mode: m, raw: part.text, span: [at, at + part.text.length], format: formatOf(part.text), ...c };
-        keep(tk);
+        keep(tk, d);
       }
       continue;
     }
@@ -179,7 +188,7 @@ export function readCss(text) {
     else if (hslRef) { t.alias = hslRef[2]; t.wrap = hslRef[1].toLowerCase(); t.wrapAlpha = hslRef[3]; t.span = null; }
     else if (looksColor(raw)) { const c = readOne(raw); if (!c) continue; Object.assign(t, c); }
     else continue;
-    keep(t);
+    keep(t, d);
   }
   // a later definition of the same name in the same mode wins, as in the cascade
   for (let i = tokens.length - 1; i >= 0; i--) if (tokens[i].dropped) tokens.splice(i, 1);
@@ -318,7 +327,7 @@ const modeOfWord = (w) => (/dark|night/i.test(w) ? 'dark' : 'light');
 
 /** Design tokens: DTCG ($value), Style Dictionary (value), Figma variables, Tokens Studio, or any JSON of colours. */
 /** JSON5 and JSON with comments (Primer, Tokens Studio): comments, unquoted keys, single quotes and trailing commas made plain JSON. */
-function json5(text) {
+export function json5(text) {
   let out = '', i = 0;
   while (i < text.length) {
     const c = text[i];
@@ -393,7 +402,7 @@ export function readJson(text) {
         const css = ['oklch', 'oklab', 'lab', 'lch', 'hwb'].includes(sp) ? `${sp}(${k.join(' ')})` : sp === 'hsl' ? `hsl(${k[0]} ${k[1]}% ${k[2]}%)` : `color(${sp} ${k.join(' ')})`;
         const c = v.hex ? readOne(v.hex) : readOne(css);
         const modeIdx = path.findIndex((p) => MODE_WORD.test(p));
-        if (c) tokens.push({ name: path.filter((_, k) => k !== modeIdx).join('.'), ...c, alpha: v.alpha ?? 1, mode: modeIdx >= 0 ? modeOfWord(path[modeIdx]) : 'light', raw: null, span: null, format: 'hex' });
+        if (c) { const tk = { name: path.filter((_, k) => k !== modeIdx && !/^\$/.test(path[k])).join('.'), ...c, alpha: v.alpha ?? 1, mode: modeIdx >= 0 ? modeOfWord(path[modeIdx]) : 'light', raw: null, span: null, format: 'hex' }; tokens.push(tk); byName.set(`${tk.name}|${tk.mode}`, tk); }
         return;
       }
       for (const [k, x] of Object.entries(o)) if (!k.startsWith('$')) walk(x, [...path, k]);
@@ -405,9 +414,10 @@ export function readJson(text) {
     while (x && !x.hex && x.alias && n++ < 8) x = byName.get(`${x.alias}|${t.mode}`) || byName.get(`${x.alias}|light`);
     if (x?.hex && x !== t) Object.assign(t, { hex: x.hex, alpha: x.alpha, via: x.name });
   }
+  const unresolved = tokens.filter((t) => !t.hex && t.alias).length;
   // JSON5 was read through a plain-JSON copy, so positions do not match the file: fixes are listed, not written
   if (converted) for (const t of tokens) t.span = null;
-  return { kind: dtcg ? 'dtcg' : sd ? 'style-dictionary' : 'json', tokens: tokens.filter((t) => t.hex) };
+  return { kind: dtcg ? 'dtcg' : sd ? 'style-dictionary' : 'json', tokens: tokens.filter((t) => t.hex), vars: unresolved, notes: unresolved ? [`${unresolved} ${unresolved === 1 ? 'token points' : 'tokens point'} to a color defined in another file, so ${unresolved === 1 ? 'it was' : 'they were'} not checked: check the token files together.`] : [] };
 }
 
 /** A Tailwind config (JS object literal): every string colour under `colors`, named by its path (blue-500, primary). */
@@ -484,7 +494,7 @@ export function readInput(text, max = 200000) {
   let out;
   if (/^[{[]/.test(t)) {
     const j = readJson(t);
-    if (j) out = { kind: j.kind, tokens: j.tokens.map((x) => ({ ...x, span: x.span ? [x.span[0] + s.indexOf(t), x.span[1] + s.indexOf(t)] : null })), rules: [] };
+    if (j) out = { kind: j.kind, tokens: j.tokens.map((x) => ({ ...x, span: x.span ? [x.span[0] + s.indexOf(t), x.span[1] + s.indexOf(t)] : null })), rules: [], notes: j.notes, vars: j.vars };
   }
   if (!out && /(module\.exports|export\s+default|\bcolors\s*:\s*\{)/.test(s) && !/--[\w-]+\s*:/.test(s)) {
     out = { kind: 'tailwind', ...readTailwind(s), rules: [] };

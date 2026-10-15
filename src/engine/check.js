@@ -48,6 +48,8 @@ const PRIMITIVE = /(^|[.\-_/])(base|primitives?|palette|core|ref|ramps?|scales?|
 export function roleOf(name) {
   const w = words(name);
   if (!w.length) return { role: null };
+  // disabled text and controls are exempt from contrast (WCAG 1.4.3, 1.4.11)
+  if (w.includes('disabled') || w.includes('inactive')) return { role: 'ignore', why: 'disabled: exempt from contrast' };
   if (PRIMITIVE.test(String(name).replace(/^(--|\$|@)/, '')) && !w.some((x) => ['on', 'foreground', 'fg', 'text', 'background', 'bg', 'surface', 'border'].includes(x))) return { role: 'scale', primitive: true };
   const has = (list) => w.some((x) => list.includes(x));
   const last = w[w.length - 1];
@@ -183,6 +185,8 @@ export function plan(read, opts = {}) {
     const asFg = fg, asBg = bg;
     fg = canon(fg); bg = canon(bg);
     if (fg === bg) return;
+    const last = (x) => words(x.name).at(-1);
+    if (fg.hex === bg.hex && COLOR_WORDS.test(last(fg) || '') && last(fg) === last(bg)) return; // --fg-black on --bg-black: utility pairs, not a design's text
     if (asFg !== fg) extra = { ...extra, asFg: asFg.name };
     if (asBg !== bg) extra = { ...extra, asBg: asBg.name };
     // the same colour on itself is never a design's pair (hidden text, a border that is the fill): only a pair you
@@ -254,7 +258,7 @@ export function plan(read, opts = {}) {
         // muted-foreground and secondary text are used on the page background too
         if (main && base !== main && (!base || /muted|subtle|secondary|surface|card|popover|background/.test(t.on))) add(t, main, 'text', `${t.name} on the page background`, { guess: !base });
       } else if (main) {
-        add(t, main, 'text', 'text on the page background', { guess: true });
+        add(t, main, 'text', 'text on the page background', { guess: !!(main.literal || /lightness/.test(t.why || '')), generic: !/^(foreground|fg|text|ink|body|body-text|default|text-default|fg-default|text-primary)$/.test(words(t.name).join('-')) });
         if (bgs.length <= 6) for (const b of bgs) if (b !== main && !hasOwnText(b, texts)) add(t, b, 'text', `text on ${b.name}`);
       }
     }
@@ -263,14 +267,14 @@ export function plan(read, opts = {}) {
       if (!main || t === main) continue;
       const own = texts.find((x) => x.on && (named.get(x.on) === t || words(t.name).join('-') === x.on));
       // a filled colour with its own text colour: rule 2 covers it; a status colour is also used as text (error messages)
-      if (own) { if (t.status) add(t, main, 'text', 'status colours are also text (error and warning messages)'); continue; }
-      add(t, main, words(t.name).includes('link') || t.status ? 'text' : 'ui', words(t.name).includes('link') ? 'links are text' : t.status ? 'status text and icons' : 'buttons, icons and accents on the background', { guess: true });
+      if (own) { if (t.status) add(t, main, 'text', 'if used as text (error and warning messages)', { optional: true }); continue; }
+      add(t, main, words(t.name).includes('link') || t.status ? 'text' : 'ui', words(t.name).includes('link') ? 'links are text' : t.status ? 'status text and icons' : 'buttons, icons and accents on the background', { guess: true, ...(t.status && !words(t.name).includes('link') ? { optional: true } : {}) });
       if (unnamed) for (const x of texts) add(x, t, 'text', 'text on an accent', { optional: true });
     }
     // 4. borders and controls: input borders and focus rings need 3:1, plain dividers are decoration
     for (const t of all.filter((x) => x.role === 'border' || x.role === 'control')) if (main) add(t, main, t.role === 'control' ? 'ui' : 'decor', t.role === 'control' ? 'input borders and focus rings (WCAG 1.4.11)' : 'dividers and card edges (decoration)');
     // 5. chart colours on the background
-    for (const t of all.filter((x) => x.role === 'chart')) if (main) add(t, main, 'ui', 'chart colours on the background (WCAG 1.4.11)');
+    for (const t of all.filter((x) => x.role === 'chart')) if (main) add(t, main, 'ui', 'chart colors on the background (WCAG 1.4.11)');
     // 6. a palette without names: dark text on every lighter colour, light text on every darker colour
     if (unnamed) for (const x of all) if (x.role === 'text' && main) add(x, main, 'text', 'darkest on lightest');
     // 7. pairs the caller declares
@@ -340,7 +344,7 @@ export function judge(p, target = 'AA', apca) {
     fg: { name: p.asFg || p.fg.name, hex: p.fg.hex, alpha: p.fg.alpha ?? 1, shown: fgHex, ...(p.asFg ? { source: p.fg.name } : {}) },
     bg: { name: p.asBg || p.bg.name, hex: p.bg.hex, alpha: p.bg.alpha ?? 1, shown: bgHex, ...(p.asBg ? { source: p.bg.name } : {}) },
     mode: p.mode, kind: p.kind, why: p.why, ratio, need, pass: ratio >= need,
-    level: ratio >= 7 ? 'AAA' : ratio >= 4.5 ? 'AA' : ratio >= 3 ? 'AA large' : 'fail',
+    level: p.kind === 'ui' ? (ratio >= 3 ? 'meets 3:1' : 'under 3:1') : ratio >= 7 ? 'AAA' : ratio >= 4.5 ? 'AA' : ratio >= 3 ? 'AA large' : 'fail',
     margin: r1(ratio - need, 2),
   };
   if (p.image) out.image = true;
@@ -348,7 +352,7 @@ export function judge(p, target = 'AA', apca) {
   if (p.optional) { out.optional = true; out.pass = null; }
   // text set without a background and nearly the page's own colour must sit on something the stylesheets do not show
   // (a dark header, a coloured badge): its background is unknown, so it is listed, not judged
-  if (p.guess && ratio < 1.2) { out.optional = true; out.pass = null; out.unknownBg = true; out.why = `${p.why}; nearly the page color, so it sits on a background the stylesheets do not show`; }
+  if ((p.guess || p.generic) && ratio < 1.2) { out.optional = true; out.pass = null; out.unknownBg = true; out.why = `${p.why}; nearly the page color, so it sits on a background the stylesheets do not show`; }
   if (apca) out.lc = apca(fgHex, bgHex);
   out.glare = glareRatio(fgHex, bgHex);
   // the worst a colour-vision deficiency does to this pair (red text on dark goes darker for protans)
@@ -383,6 +387,7 @@ export function collisions(groups) {
     const m = g.members.slice(0, 24);
     for (let i = 0; i < m.length; i++) for (let j = i + 1; j < m.length; j++) {
       const a = m[i], b = m[j];
+      if (a.hex === b.hex) continue; // the same colour under two names is one colour, not a look-alike
       const normal = dE(a.hex, b.hex);
       const under = VISION.map((v) => ({ id: v.id, label: v.label, d: dE(seeAs(a.hex, v.id), seeAs(b.hex, v.id)) }));
       // name the deficiency that matters most: red-green (about 1 in 12 men) before the rare ones, when it merges them
@@ -443,7 +448,7 @@ export function feel(hexes) {
   const lightRange = r1(ls[ls.length - 1] - ls[0], 2);
   const steps = ls.filter((l, i) => !i || l - ls[i - 1] >= 0.08).length;
   const best = o.length >= 2 ? contrast(o.reduce((a, b) => (a.l > b.l ? a : b)).hex, o.reduce((a, b) => (a.l < b.l ? a : b)).hex) : 21;
-  if (lightRange < 0.5 && o.length >= 2 && best < 4.5) notes.push({ kind: 'flat', text: `The lightest and darkest colours are only ${Math.round(lightRange * 100)} points apart in lightness, so no pair will carry body text. Add a near-black or near-white.` });
+  if (lightRange < 0.5 && o.length >= 2 && best < 4.5) notes.push({ kind: 'flat', text: `The lightest and darkest colors are only ${Math.round(lightRange * 100)} points apart in lightness, so no pair will carry body text. Add a near-black or near-white.` });
   else if (steps < Math.min(3, o.length)) notes.push({ kind: 'steps', text: 'Few distinct lightness steps: headings, text and surfaces will be hard to tell apart. Spread the lightness more.' });
   // vibration: saturated opposite hues at similar lightness flicker where they meet
   const vib = [];
@@ -455,7 +460,7 @@ export function feel(hexes) {
   // gamut: colours P3 screens could show far more vivid
   const edge = o.filter((x) => { const v = toGamut('p3', 'oklch')({ mode: 'oklch', l: x.l, c: 0.4, h: x.h }); return x.c > 0.1 && toOklch(v).c > x.c * 1.3; });
   const muddy = o.filter((x) => x.l > 0.35 && x.l < 0.6 && x.c > 0.03 && x.c < 0.07 && x.h > 40 && x.h < 120);
-  if (muddy.length && muddy.length < o.length) notes.push({ kind: 'muddy', text: `${muddy.map((x) => '#' + x.hex).join(', ')} ${muddy.length === 1 ? 'sits' : 'sit'} in the dull olive-brown band (mid lightness, low chroma, warm hue), which can read as dirty next to clean colours.` });
+  if (muddy.length && muddy.length < o.length) notes.push({ kind: 'muddy', text: `${muddy.map((x) => '#' + x.hex).join(', ')} ${muddy.length === 1 ? 'sits' : 'sit'} in the dull olive-brown band (mid lightness, low chroma, warm hue), which can read as dirty next to clean colors.` });
   const neutrals = o.filter((x) => x.c <= 0.04).length;
   return {
     harmony, hues: clusters.map((c) => ({ h: r1(c.h), name: hueName(c.h), count: c.members.length })),
@@ -502,7 +507,7 @@ export function solve(planned, target = 'AA', lock = [], opts = {}) {
   const margin = opts.margin ?? 0.1;
   const value = new Map(planned.tokens.map((t) => [t.id, t.hex]));
   const locked = new Set(lock.map(String));
-  const pairs = planned.pairs.filter((p) => p.kind !== 'decor' && !p.optional && !p.image);
+  const pairs = planned.pairs.filter((p) => p.kind !== 'decor' && !p.optional && !p.image && !((p.guess || p.generic) && contrast(p.fg.hex, p.bg.hex) < 1.2));
   const shownBg = (p, v) => (p.bg.alpha < 1 ? over(v.get(p.bg.id), p.bg.alpha, p.mode === 'dark' ? '000000' : 'ffffff') : v.get(p.bg.id));
   const ratioOf = (p, v = value) => { const bg = shownBg(p, v); return wcagContrast(col(over(v.get(p.fg.id), p.fg.alpha, bg)), col(bg)); };
   const ok = (p, v = value, extra = 0) => { const r = ratioOf(p, v); return r >= needOf(p.kind, target) + extra && contrast(over(v.get(p.fg.id), p.fg.alpha, shownBg(p, v)), shownBg(p, v)) >= needOf(p.kind, target); };
@@ -520,11 +525,12 @@ export function solve(planned, target = 'AA', lock = [], opts = {}) {
     const src = t.via && planned.tokens.find((x) => x.name === t.via && x.mode === t.mode) || planned.tokens.find((x) => x.name === t.via);
     if (!src || !isPalette(src)) return null;
     const stem = src.name.replace(/[-_.]?\d+$/, '');
-    if (stem === src.name) return null;
+    // a named palette colour ($cyan): the other palette colours near it are the steps to choose from
+    if (stem === src.name) return planned.tokens.filter((x) => x !== src && x.mode === src.mode && isPalette(x) && !x.via && dE(src.hex, x.hex) <= 25).map((x) => ({ x, src }));
     return planned.tokens.filter((x) => x !== src && x.mode === src.mode && x.name !== src.name && x.name.replace(/[-_.]?\d+$/, '') === stem && /\d+$/.test(x.name)).map((x) => ({ x, src }));
   };
   const movable = (t) => !t.inherited && !locked.has(t.name) && !locked.has(t.hex) && !locked.has('#' + t.hex) && !(isPalette(t) && planned.tokens.some((x) => x.via === t.name));
-  const moved = new Map(), repoint = new Map();
+  const moved = new Map(), repoint = new Map(), flipped = new Set();
   for (let round = 0; round < 60; round++) {
     const failing = pairs.filter((p) => !ok(p));
     if (!failing.length) break;
@@ -551,8 +557,17 @@ export function solve(planned, target = 'AA', lock = [], opts = {}) {
     moved.set(best.t.id, best.t);
     if (best.via) repoint.set(best.t.id, best.via); else repoint.delete(best.t.id);
   }
+  // a text colour made for one background (white on a locked brand colour) may turn dark if that is the only way to pass
+  for (const p of pairs.filter((x) => !ok(x))) {
+    const f = byId.get(p.fg.id), b = byId.get(p.bg.id);
+    if (!f || !b || movable(b) || !movable(f) || !f.on) continue;
+    const all = ids(f), mine = pairs.filter((x) => all.includes(x.fg.id) || all.includes(x.bg.id));
+    const prev = value.get(f.id);
+    const best = ['000000', 'ffffff', prev].map((seed) => nearestL(seed, (x) => { setAll(f, x); const r = mine.every((q) => ok(q, value, q === p ? margin : 0)); setAll(f, prev); return r; })).filter(Boolean).sort((a, c) => dE(prev, a) - dE(prev, c))[0];
+    if (best) { setAll(f, best); moved.set(f.id, f); flipped.add(f.id); }
+  }
   const changes = [...moved.values()].map((t) => ({ name: t.name, mode: t.mode, role: t.role, from: t.hex, to: value.get(t.id), deltaE: dE(t.hex, value.get(t.id)), span: t.span, raw: t.raw, format: t.format, alpha: t.alpha,
-    ...(repoint.get(t.id) ? { repoint: repoint.get(t.id) } : {}), ...(copies.get(t.id) ? { alsoDark: true } : {}) }))
+    ...(repoint.get(t.id) ? { repoint: repoint.get(t.id) } : {}), ...(copies.get(t.id) ? { alsoDark: true } : {}), ...(flipped.has(t.id) ? { flipped: true } : {}) }))
     .filter((c) => c.from !== c.to);
   const why = (p) => {
     const f = byId.get(p.fg.id), b = byId.get(p.bg.id);

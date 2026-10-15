@@ -34,6 +34,7 @@ function walk(dir, out, root) {
 /** The files a list of arguments means, each once, in a stable order. */
 export function expand(args, cwd = process.cwd()) {
   const out = [];
+  const named = new Set(); // files given by name are read whatever they are called
   for (const a of args.length ? args : ['.']) {
     if (/[*?]/.test(a)) {
       const base = a.slice(0, a.search(/[*?]/)).replace(/[^/]*$/, '') || '.';
@@ -46,11 +47,11 @@ export function expand(args, cwd = process.cwd()) {
     const p = path.resolve(cwd, a);
     let st;
     try { st = fs.statSync(p); } catch { throw new Error(`No such file or folder: ${a}`); }
-    if (st.isDirectory()) walk(p, out, cwd); else out.push(p);
+    if (st.isDirectory()) walk(p, out, cwd); else { out.push(p); named.add(p); }
   }
   const keep = (f) => !/\.(js|cjs|mjs|ts)$/i.test(f) || CONFIG_JS.test(f);
   const jsonOk = (f) => !/\.json$/i.test(f) || !/(^|[/\\])(package(-lock)?|tsconfig[\w.-]*|jsconfig|composer|manifest|\.?eslintrc[\w.-]*|renovate|turbo|vercel|firebase|app)\.json$/i.test(f);
-  return [...new Set(out)].filter((f) => keep(f) && jsonOk(f)).sort();
+  return [...new Set(out)].filter((f) => named.has(f) || (keep(f) && jsonOk(f))).sort();
 }
 
 /**

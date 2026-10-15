@@ -25,7 +25,7 @@ const fixOf = (r, p) => r.fix.changes.filter((c) => c.mode === p.mode && (c.name
 export function text(results, opts) {
   const out = [];
   for (const { group, report: r } of results) {
-    out.push(`${C.b}${rel(group.label)}${C.x} ${C.d}(${r.input.kind}, ${r.input.colors} colors${r.input.modes.length > 1 ? ', light and dark' : ''})${C.x}`);
+    out.push(`${C.b}${rel(group.label)}${C.x} ${C.d}(${r.input.kind}, ${r.input.colors} ${r.input.colors === 1 ? 'color' : 'colors'}${r.input.modes.length > 1 ? ', light and dark' : ''})${C.x}`);
     const f = failing(r);
     for (const p of f) {
       const at = whereOf(group, r, p);
@@ -37,7 +37,7 @@ export function text(results, opts) {
     for (const c of lookAlike(r)) out.push(`  ${C.y}!${C.x} ${c.a.name} and ${c.b.name} look alike with ${c.worst.label.toLowerCase()} (ΔE ${c.worst.d})`);
     if (opts.verbose) for (const p of r.pairs.filter((x) => x.pass)) out.push(`  ${C.g}✓${C.x} ${p.fg.name} on ${p.bg.name}${r.input.modes.length > 1 ? ` [${p.mode}]` : ''}: ${p.ratio}:1`);
     out.push(`  ${f.length ? C.r : C.g}${r.summary.pass} pass, ${r.summary.fail} fail${C.x} against ${r.standard}${r.input.warnings.length ? `  ${C.y}${r.input.warnings.join(' ')}${C.x}` : ''}`);
-    if (r.fix.remaining.length) out.push(`  ${C.y}${r.fix.remaining.length} pair(s) need both colors to move.${C.x}`);
+    if (r.fix.remaining.length) out.push(`  ${C.y}${r.fix.remaining.length} ${r.fix.remaining.length === 1 ? 'pair has' : 'pairs have'} no single-color fix: ${r.fix.remaining.slice(0, 2).map((x) => `${x.fg} on ${x.bg}: ${x.reason}`).join('; ')}.${C.x}`);
     out.push('');
   }
   return out.join('\n');

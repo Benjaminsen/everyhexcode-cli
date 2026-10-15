@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { applyFix, check, VERSION as ENGINE } from './engine/check.js';
+import { json5 } from './engine/check-input.js';
 import { expand, groups, skipped } from './files.js';
 import * as out from './output.js';
 import { renderScan } from './render.js';
@@ -78,6 +79,7 @@ function exitCode(results, failOn) {
 /** Write the fix back, file by file: each change goes into the file its value came from, in the way it was written. */
 function writeBack(group, report) {
   const written = [];
+  if (group.merged) return written; // a combined read of several files: the changes are listed for each token instead
   for (const part of group.parts) {
     const mine = report.fix.changes.filter((c) => c.span && c.span[0] >= part.start && c.span[1] <= part.end).map((c) => ({ ...c, span: [c.span[0] - part.start, c.span[1] - part.start] }));
     if (!mine.length) continue;
@@ -120,13 +122,25 @@ async function main() {
 
   const files = expand(a._.length ? a._ : cfg.files || ['.']);
   if (!files.length) { console.error('No CSS, SCSS, Less, token or Tailwind config files found.'); return 2; }
-  const results = groups(files).map((group) => ({ group, report: check(group.text, { ...opts, label: path.basename(group.label) }) })).filter(({ report }) => report.input.colors);
+  let results = groups(files).map((group) => ({ group, report: check(group.text, { ...opts, label: path.basename(group.label) }) }));
+  // token files that point into each other (theme.json → color.json) are read together; fixes are then listed, not written
+  const tokenJson = results.filter(({ group }) => /\.json5?$/i.test(group.label));
+  if (tokenJson.length > 1 && tokenJson.some(({ report }) => report.input.warnings.some((w) => /another file/.test(w)))) {
+    const merge = (a, b) => { for (const [k, v] of Object.entries(b)) a[k] = v && typeof v === 'object' && !Array.isArray(v) && a[k] && typeof a[k] === 'object' ? merge(a[k], v) : v; return a; };
+    let all = {};
+    for (const { group } of tokenJson) { try { all = merge(all, JSON.parse(group.text)); } catch { try { all = merge(all, JSON.parse(json5(group.text))); } catch { /* not JSON */ } } }
+    const text = JSON.stringify(all, null, 2);
+    const group = { label: `${tokenJson.length} token files together`, text, parts: [{ file: tokenJson[0].group.parts[0].file, start: 0, end: text.length, text }], merged: true };
+    results = [...results.filter((x) => !tokenJson.includes(x)), { group, report: check(text, { ...opts, label: 'tokens' }) }];
+  }
+  for (const { group, report } of results) if (!report.input.colors && report.input.warnings.length) console.error(`${path.relative(process.cwd(), group.label) || group.label}: ${report.input.warnings.join(' ')}`);
+  results = results.filter(({ report }) => report.input.colors);
   for (const x of skipped) console.error(`everyhexcode: skipped ${x}`);
   if (!results.length) { console.error(`No colors found in ${files.length} file(s)${skipped.length ? ` (${skipped.length} skipped)` : ''}: nothing to check.`); return skipped.length ? 2 : 0; }
   if (cmd === 'fix' && a.write) {
     const lines = results.flatMap(({ group, report }) => writeBack(group, report));
     // values with no place in the text (Figma variables, values reached through an alias written as hsl(var()))
-    const unwritten = results.flatMap(({ report }) => report.fix.changes.filter((c) => !c.span).map((c) => `${c.name}${report.input.modes.length > 1 ? ` (${c.mode})` : ''}: #${c.from} → #${c.to}`));
+    const unwritten = results.flatMap(({ group, report }) => report.fix.changes.filter((c) => !c.span || group.merged).map((c) => `${c.name}${report.input.modes.length > 1 ? ` (${c.mode})` : ''}: #${c.from} → #${c.to}`));
     console.log(lines.length ? `Changed:\n${lines.map((l) => '  ' + l).join('\n')}` : unwritten.length ? 'No file text to change.' : 'Nothing to change.');
     if (unwritten.length) console.log(`Change these where they are defined (they have no value in the file text):\n${unwritten.map((l) => '  ' + l).join('\n')}`);
     const again = groups(files).map((group) => ({ group, report: check(group.text, { ...opts, label: path.basename(group.label) }) }));
