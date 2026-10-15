@@ -1,0 +1,80 @@
+name: Every Hex Code color check
+description: Check the colors in your CSS, Tailwind config and design tokens against WCAG 2 contrast and color blindness, with the nearest passing colors.
+author: Moltke Benjaminsen ApS
+branding:
+  icon: droplet
+  color: blue
+inputs:
+  files:
+    description: Files, folders or globs to check, separated by spaces. Default the "files" in colorcheck.json, else the whole repository.
+    required: false
+    default: ''
+  target:
+    description: WCAG 2 level, AA or AAA.
+    required: false
+    default: AA
+  url:
+    description: Optional. A page to load in headless Chrome and check as it is drawn, such as a preview deployment or a local server started earlier in the job.
+    required: false
+    default: ''
+  fail-on:
+    description: fail (failing pairs fail the step), warn (look-alike colors too) or none.
+    required: false
+    default: fail
+  config:
+    description: Settings file. Default colorcheck.json when it exists.
+    required: false
+    default: ''
+  lock:
+    description: Comma-separated names or hex codes the suggested fixes must not change.
+    required: false
+    default: ''
+  sarif:
+    description: Also write SARIF to this file, for github/codeql-action/upload-sarif.
+    required: false
+    default: ''
+outputs:
+  exit-code:
+    description: 0 when everything passes, 1 when a pair fails, 2 on a usage or read error.
+    value: ${{ steps.check.outputs.exit-code }}
+runs:
+  using: composite
+  steps:
+    - id: node
+      shell: bash
+      run: echo "major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)" >> "$GITHUB_OUTPUT"
+    - if: steps.node.outputs.major < 20
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+    - id: check
+      shell: bash
+      env:
+        INPUT_FILES: ${{ inputs.files }}
+        INPUT_TARGET: ${{ inputs.target }}
+        INPUT_URL: ${{ inputs.url }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_LOCK: ${{ inputs.lock }}
+        INPUT_SARIF: ${{ inputs.sarif }}
+      run: |
+        set +e
+        CLI="$GITHUB_ACTION_PATH/dist/everyhexcode.js"
+        FLAGS=""
+        [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ] && FLAGS="--experimental-websocket"
+        ARGS=(--target "$INPUT_TARGET" --fail-on "$INPUT_FAIL_ON" --format github)
+        [ -n "$INPUT_CONFIG" ] && ARGS+=(--config "$INPUT_CONFIG")
+        [ -n "$INPUT_LOCK" ] && ARGS+=(--lock "$INPUT_LOCK")
+        [ -n "$INPUT_SARIF" ] && ARGS+=(--sarif "$INPUT_SARIF")
+        read -r -a FILES <<< "$INPUT_FILES"
+        node $FLAGS "$CLI" check "${FILES[@]}" "${ARGS[@]}"
+        code=$?
+        if [ -n "$INPUT_URL" ]; then
+          SCAN=(--target "$INPUT_TARGET" --fail-on "$INPUT_FAIL_ON" --format github)
+          [ -n "$INPUT_SARIF" ] && SCAN+=(--sarif "${INPUT_SARIF%.sarif}-page.sarif")
+          node $FLAGS "$CLI" scan "$INPUT_URL" "${SCAN[@]}"
+          c2=$?
+          [ "$c2" -gt "$code" ] && code=$c2
+        fi
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        exit $code
