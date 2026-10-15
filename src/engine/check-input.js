@@ -3,6 +3,7 @@
 // list of named colour tokens, each with its light or dark mode and where its value sits in the text, so a fix can be
 // written back into the same text. CSS rules that set both a text and a background colour are kept as declared pairs.
 import { parseColor } from './parse.js';
+import { formatHex, interpolate, parse as cparse } from 'culori/fn';
 
 export const MAX_TOKENS = 300;
 
@@ -19,7 +20,7 @@ const CSS_NAMES = new Set(('aliceblue antiquewhite aqua aquamarine azure beige b
   + 'plum powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown seagreen seashell sienna silver skyblue '
   + 'slateblue slategray slategrey snow springgreen steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow '
   + 'yellowgreen').split(' '));
-const FN = /^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/i;
+const FN = /^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix)\(/i;
 const BARE_HSL = /^-?[\d.]+(?:deg)?\s+[\d.]+%\s+[\d.]+%(?:\s*\/\s*[\d.]+%?)?$/;
 
 /** Whether a declared value is meant as a colour (so --radius: 0.5rem or --z: 10 are never read as one). */
@@ -35,14 +36,37 @@ export function looksColor(raw) {
 /** The way a value is written, so a fix is written back the same way. */
 export function formatOf(raw) {
   const v = String(raw).trim().toLowerCase();
-  if (v.startsWith('#')) return v.length <= 5 || v.length === 7 ? (raw.trim() === raw.trim().toUpperCase() ? 'HEX' : 'hex') : 'hex8';
+  if (v.startsWith('#')) return v.length <= 5 || v.length === 7 ? (/[A-F]/.test(raw) && !/[a-f]/.test(raw) ? 'HEX' : 'hex') : 'hex8';
   if (BARE_HSL.test(v)) return 'hsl-bare';
   const m = v.match(/^([a-z]+)\(/);
   if (m) return m[1].replace(/a$/, '') + (/,/.test(v) ? '-legacy' : '');
   return 'name';
 }
 
+/** color-mix(in <space>, a p%, b q%) worked out as browsers do it (CSS Color 5), or null. */
+function mix(v) {
+  const m = /^color-mix\(\s*in\s+([\w-]+)(?:\s+(?:shorter|longer|increasing|decreasing)\s+hue)?\s*,(.*)\)$/i.exec(v.trim());
+  if (!m) return null;
+  const parts = []; let depth = 0, cur = '';
+  for (const ch of m[2]) { if (ch === '(') depth++; if (ch === ')') depth--; if (ch === ',' && !depth) { parts.push(cur); cur = ''; } else cur += ch; }
+  parts.push(cur);
+  if (parts.length !== 2) return null;
+  const one = (x) => { const pm = x.trim().match(/^(.*?)(?:\s+([\d.]+)%)?$/s); return { c: parseColor(pm[1].trim()), p: pm[2] != null ? Number(pm[2]) : null }; };
+  const a = one(parts[0]), b = one(parts[1]);
+  if (!a.c.hex || !b.c.hex) return null;
+  let pa = a.p, pb = b.p;
+  if (pa == null && pb == null) { pa = 50; pb = 50; } else if (pa == null) pa = 100 - pb; else if (pb == null) pb = 100 - pa;
+  const sum = pa + pb;
+  if (sum <= 0) return null;
+  const space = { srgb: 'rgb', 'srgb-linear': 'lrgb', oklab: 'oklab', oklch: 'oklch', lab: 'lab', lch: 'lch', hsl: 'hsl', hwb: 'hwb', xyz: 'xyz65', 'xyz-d65': 'xyz65', 'display-p3': 'p3' }[m[1].toLowerCase()] || 'oklab';
+  const ca = cparse('#' + a.c.hex), cb = cparse('#' + b.c.hex);
+  ca.alpha = a.c.alpha ?? 1; cb.alpha = b.c.alpha ?? 1;
+  const out = interpolate([ca, cb], space)(pb / sum);
+  return { hex: formatHex(out).slice(1), alpha: Math.round(Math.min(1, out.alpha ?? 1) * (sum < 100 ? sum / 100 : 1) * 1000) / 1000 };
+}
+
 const readOne = (raw) => {
+  if (/^color-mix\(/i.test(String(raw).trim())) return mix(raw);
   const r = parseColor(String(raw).trim());
   return r.hex ? { hex: r.hex, alpha: r.alpha ?? 1 } : null;
 };
@@ -50,13 +74,25 @@ const readOne = (raw) => {
 /** Comments out, offsets kept: each comment becomes spaces of the same length. */
 function blankComments(s, line = true) {
   let out = s.replace(/\/\*[^]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
-  if (line) out = out.replace(/(^|[^:"'])\/\/[^\n]*/g, (m, p) => p + ' '.repeat(m.length - p.length));
+  if (line) out = out.replace(/(^|[^:"'(\w\/])\/\/[^\n]*/g, (m, p) => p + ' '.repeat(m.length - p.length));
   return out;
 }
 
-const DARK_SEL = /\.dark\b|\[data-(?:theme|mode|color-scheme)=["']?dark|\.theme-dark|\bdark-theme\b|\[theme=["']?dark/i;
+const DARK_SEL = /\.dark\b|\[data-(?:[\w-]*theme|mode|color-scheme)=["']?dark|\.theme-dark|\bdark-theme\b|\[theme=["']?dark/i;
 const DARK_MEDIA = /prefers-color-scheme\s*:\s*dark/i;
 const LIGHT_SEL = /\.light\b|\[data-(?:theme|mode|color-scheme)=["']?light|prefers-color-scheme\s*:\s*light/i;
+
+// where a custom property is a design token: at the top, under :root, html, body, a theme class or attribute, or inside
+// @media, @supports, @layer or @theme around those. One set inside a component (.card { --bg: … }) is that component's.
+const MODE_ATTR = '\\[data-(?:[\\w-]*theme|mode|color-scheme)(?:=["\']?(?:light|dark)["\']?)?\\]';
+const GLOBAL_PART = new RegExp(`^((:root|html|body|:host|\\*)?(${MODE_ATTR}|\\.(dark|light)(-theme|-mode)?|:not\\(\\.dark\\)|:not\\(\\.light\\)|:not\\(${MODE_ATTR}\\))*|:root|html|body|:host|\\*|\\.dark|\\.light)$`, 'i');
+export function isGlobalScope(prelude) {
+  const p = String(prelude || '').trim();
+  if (!p || /^@(media|supports|layer|theme|container|document|scope)\b/i.test(p)) return true;
+  if (p.startsWith('@')) return false;
+  // a list that includes the root (":root, :root:has(…), [data-theme=light]") applies to the page: it is global
+  return p.split(',').some((x) => GLOBAL_PART.test(x.trim().replace(/\s+/g, ' ')) || /^(:root|html)\s+(body)?$/.test(x.trim()));
+}
 
 const PROPS = {
   color: 'fg', 'background-color': 'bg', background: 'bg', 'border-color': 'border', border: 'border', 'border-top': 'border',
@@ -66,7 +102,8 @@ const PROPS = {
 
 /** CSS, SCSS and Less: custom properties and variables become tokens; rules keep the colours they set. */
 export function readCss(text) {
-  const src = blankComments(text, /\$[\w-]+\s*:|@[\w-]+\s*:/.test(text));
+  // // comments exist only in SCSS and Less; in plain CSS a // is part of a url(), so only those files lose them
+  const src = blankComments(text, /^\s*[$@][\w-]+\s*:/m.test(text) && !/^\s*@(media|supports|import|font-face|layer|container|charset|keyframes)\b/m.test(text.slice(0, 0)));
   const tokens = [], rules = [];
   const stack = []; // preludes of the open blocks
   let i = 0, start = 0;
@@ -81,13 +118,14 @@ export function readCss(text) {
     let val = src.slice(vs, ve);
     const imp = val.match(/\s*!(?:important|default|global)\s*$/i);
     if (imp) { val = val.slice(0, -imp[0].length); ve -= imp[0].length; }
-    decls.push({ prop: m[1], value: val, span: [vs, ve], depth: stack.length, prelude: stack[stack.length - 1] || '', mode: mode(), scoped: stack.some((p) => LIGHT_SEL.test(p)), block: blockId });
+    decls.push({ prop: m[1], value: val, span: [vs, ve], depth: stack.length, prelude: stack[stack.length - 1] || '', global: stack.every(isGlobalScope), mode: mode(), scoped: stack.some((p) => LIGHT_SEL.test(p)), block: blockId });
   };
   let blockId = 0, blockSeq = 0; const blockStack = [];
   let quote = null, paren = 0;
   for (; i < src.length; i++) {
     const ch = src[i];
-    if (quote) { if (ch === quote && src[i - 1] !== '\\') quote = null; continue; }
+    if (ch === '\\') { i++; continue; } // an escaped character (Tailwind's .\[\&\>svg\:not\(…) is never a quote, a bracket or a brace
+    if (quote) { if (ch === quote) quote = null; continue; }
     if (ch === '"' || ch === "'") { quote = ch; continue; }
     if (ch === '(') { paren++; continue; }
     if (ch === ')') { paren = Math.max(0, paren - 1); continue; }
@@ -103,21 +141,47 @@ export function readCss(text) {
   flushDecl(start, src.length);
 
   // variables first: custom properties, $scss and @less
+  // a file of themes only (.theme-zinc { … } .theme-rose { … }): its first theme stands in for the default
+  let firstTheme = null;
+  if (!decls.some((d) => d.global && d.prop.startsWith('--') && looksColor(d.value.trim()))) {
+    const d0 = decls.find((d) => d.prop.startsWith('--') && looksColor(d.value.trim()) && /theme|\[data-[\w-]*(theme|mode)|color-scheme/i.test(d.prelude));
+    const key = d0 && (d0.prelude.match(/\.[\w-]+|\[data-[\w-]+=["']?[\w-]+["']?\]/) || [])[0];
+    if (key) { firstTheme = key; for (const d of decls) if (d.prelude.includes(key)) { d.global = true; if (DARK_SEL.test(d.prelude) && !DARK_SEL.test(key)) d.mode = 'dark'; } }
+  }
   const vars = new Map(); // name|mode → token
+  const themeScopes = new Set();
+  const scoped = new Map(); // block|name → raw value, for var() inside that component's own rules
+  const keep = (t) => { const k = `${t.name}|${t.mode}`; const was = vars.get(k); if (was) was.dropped = true; vars.set(k, t); tokens.push(t); };
   for (const d of decls) {
+    if (d.prop.startsWith('--tw-')) continue; // Tailwind's internal variables (ring offsets, gradients stops), not the design's colours
     const isVar = d.prop.startsWith('--') || ((d.prop.startsWith('$') || (d.prop.startsWith('@') && !/^@(media|supports|import|font-face|keyframes|layer|theme|container|tailwind|apply|use|forward|include|mixin|function|return|if|else|each|for|while|charset|namespace|page)$/.test(d.prop))) && d.depth <= 1);
     if (!isVar) continue;
     const raw = d.value.trim();
-    const ref = raw.match(/^var\(\s*(--[\w-]+)\s*(?:,[^)]*)?\)$/) || raw.match(/^([$@][\w-]+)$/);
+    if (d.prop.startsWith('--') && !d.global) { scoped.set(`${d.block}|${d.prop}`, raw); if (/theme|\[data-/i.test(d.prelude) && looksColor(raw)) themeScopes.add(d.prelude.replace(/\s+/g, ' ').slice(0, 60)); continue; }
+    const ref = raw.match(/^var\(\s*(--[\w-]+)\s*(?:,\s*([^)]*))?\)$/) || raw.match(/^([$@][\w-]+)$/);
     const hslRef = raw.match(/^(hsla?|rgba?|oklch)\(\s*var\(\s*(--[\w-]+)\s*\)\s*(?:\/\s*([\d.]+%?))?\s*\)$/i);
+    // light-dark(a, b): one value per mode, each written back where it stands
+    const ld = splitLightDark(raw);
+    if (ld) {
+      for (const [m, part] of [['light', ld[0]], ['dark', ld[1]]]) {
+        if (!looksColor(part.text)) continue;
+        const c = readOne(part.text);
+        if (!c) continue;
+        const at = d.span[0] + part.at;
+        const tk = { name: d.prop, mode: m, raw: part.text, span: [at, at + part.text.length], format: formatOf(part.text), ...c };
+        keep(tk);
+      }
+      continue;
+    }
     const t = { name: d.prop, mode: d.mode, raw, span: d.span, format: formatOf(raw) };
-    if (ref) t.alias = ref[1];
+    if (ref) { t.alias = ref[1]; if (ref[2] && looksColor(ref[2])) t.fallback = ref[2].trim(); }
     else if (hslRef) { t.alias = hslRef[2]; t.wrap = hslRef[1].toLowerCase(); t.wrapAlpha = hslRef[3]; t.span = null; }
     else if (looksColor(raw)) { const c = readOne(raw); if (!c) continue; Object.assign(t, c); }
     else continue;
-    vars.set(`${t.name}|${t.mode}`, t);
-    tokens.push(t);
+    keep(t);
   }
+  // a later definition of the same name in the same mode wins, as in the cascade
+  for (let i = tokens.length - 1; i >= 0; i--) if (tokens[i].dropped) tokens.splice(i, 1);
   const lookup = (name, m) => vars.get(`${name}|${m}`) || vars.get(`${name}|light`);
   const resolve = (t, seen = new Set()) => {
     if (t.hex || !t.alias) return t;
@@ -133,15 +197,33 @@ export function readCss(text) {
     return t;
   };
   tokens.forEach((t) => resolve(t));
+  // var(--missing, #999): the fallback is what the browser uses
+  for (const t of tokens) if (!t.hex && t.fallback) { const c = readOne(t.fallback); if (c) Object.assign(t, c); }
+  // var() resolves where it is used: an alias set once (Tailwind v4's @theme --color-background: var(--background))
+  // follows its target into dark mode when only the target is redefined there
+  if (tokens.some((t) => t.mode === 'dark')) {
+    for (const t of tokens.filter((x) => x.mode === 'light' && x.alias && !vars.has(`${x.name}|dark`))) {
+      const to = vars.get(`${t.alias}|dark`);
+      if (!to) continue;
+      resolve(to);
+      const c = t.wrap && to.raw ? readOne(`${t.wrap}(${to.raw}${t.wrapAlpha ? ` / ${t.wrapAlpha}` : ''})`) : to.hex ? { hex: to.hex, alpha: to.alpha } : null;
+      if (c) { const d = { ...t, ...c, mode: 'dark', span: null, via: to.name }; vars.set(`${t.name}|dark`, d); tokens.push(d); }
+    }
+  }
 
   // a value in a rule: a colour, a variable, or a colour inside a shorthand
-  const valueOf = (raw, m, span) => {
+  const valueOf = (raw, m, span, block, depth = 0) => {
     const v = raw.trim();
     if (/gradient\(|url\(/i.test(v)) return { image: true };
     const fn = v.match(/^(hsla?|rgba?|oklch)\(\s*var\(\s*(--[\w-]+)\s*\)\s*(?:\/\s*([\d.]+%?))?\s*\)$/i);
     if (fn) { const t = lookup(fn[2], m); const c = t?.raw && readOne(`${fn[1]}(${t.raw}${fn[3] ? ` / ${fn[3]}` : ''})`); return c ? { ...c, token: t.name } : null; }
     const vr = v.match(/var\(\s*(--[\w-]+)/) || v.match(/^([$@][\w-]+)$/);
-    if (vr) { const t = lookup(vr[1], m); return t?.hex ? { hex: t.hex, alpha: t.alpha, token: t.name } : null; }
+    if (vr) {
+      // a variable the component sets for itself resolves there first
+      const sv = block != null && depth < 6 && scoped.get(`${block}|${vr[1]}`);
+      if (sv) { const inner = valueOf(sv, m, null, block, depth + 1); return inner ? { ...inner, token: undefined, span: null, raw: undefined } : null; }
+      const t = lookup(vr[1], m); return t?.hex ? { hex: t.hex, alpha: t.alpha, token: t.name } : null;
+    }
     const lit = (x, at) => { const c = readOne(x); return c && { ...c, raw: x, format: formatOf(x), span: span ? [span[0] + at, span[0] + at + x.length] : null }; };
     if (looksColor(v)) return lit(v, raw.indexOf(v));
     for (const part of v.split(/\s+(?![^(]*\))/)) if (looksColor(part)) return lit(part, raw.indexOf(part));
@@ -156,11 +238,44 @@ export function readCss(text) {
     if (!r) { r = { selector: d.prelude.replace(/\s+/g, ' ').slice(0, 120), mode: d.mode, scoped: d.scoped }; byBlock.set(d.block, r); }
     if (/^font-size$/i.test(d.prop)) { const px = toPx(d.value); if (px) r.fontSize = px; continue; }
     if (/^font-weight$/i.test(d.prop)) { const w = d.value.trim() === 'bold' ? 700 : Number(d.value); if (w) r.fontWeight = w; continue; }
-    const v = valueOf(d.value, d.mode, d.span);
-    if (v && (v.hex || v.image)) r[kind] = v;
+    const ldv = splitLightDark(d.value.trim());
+    if (ldv) {
+      // a rule value that differs by mode: the light one here, the dark one on a twin rule kept for dark mode only
+      const off = d.value.indexOf(d.value.trim());
+      const lv = valueOf(ldv[0].text, 'light', [d.span[0] + off + ldv[0].at, 0], d.block), dv = valueOf(ldv[1].text, 'dark', [d.span[0] + off + ldv[1].at, 0], d.block);
+      if (lv) { r[kind] = lv; r.scoped = true; }
+      let twin = byBlock.get(`${d.block}|dark`);
+      if (!twin) { twin = { selector: r.selector, mode: 'dark', scoped: true, twinOf: r }; byBlock.set(`${d.block}|dark`, twin); }
+      if (dv) twin[kind] = dv;
+      continue;
+    }
+    const v = valueOf(d.value, d.mode, d.span, d.block);
+    if (v && (v.hex || v.image)) { r[kind] = v; const tw = byBlock.get(`${d.block}|dark`); if (tw && !tw[kind]) tw[kind] = v; }
   }
-  for (const r of byBlock.values()) if (r.fg || r.bg || r.border || r.outline) rules.push(r);
-  return { tokens: tokens.filter((t) => t.hex), rules };
+  for (const r of byBlock.values()) {
+    if (r.twinOf) for (const k of ['fg', 'bg', 'border', 'outline', 'fontSize', 'fontWeight']) if (r[k] === undefined && r.twinOf[k] !== undefined) r[k] = r.twinOf[k];
+    if (r.fg || r.bg || r.border || r.outline) rules.push(r);
+  }
+  const notes = firstTheme ? [`Only the first theme, ${firstTheme}, is checked${themeScopes.size ? `; ${themeScopes.size} other theme ${themeScopes.size === 1 ? 'scope is' : 'scopes are'} not` : ''}. Paste one theme at a time to check another.`] : themeScopes.size ? [`${themeScopes.size} other theme ${themeScopes.size === 1 ? 'scope was' : 'scopes were'} not checked (${[...themeScopes].slice(0, 3).join(', ')}${themeScopes.size > 3 ? ', …' : ''}): only the default light and dark colors are. Paste one theme at a time to check it.`] : [];
+  return { tokens: tokens.filter((t) => t.hex), rules, notes, vars: decls.filter((d) => d.prop.startsWith('--')).length };
+}
+
+/** light-dark(a, b) → [{ text, at }, { text, at }] (offsets inside the value), or null. */
+export function splitLightDark(v) {
+  const m = /^light-dark\(/i.exec(v);
+  if (!m || !v.endsWith(')')) return null;
+  const inner = v.slice(m[0].length, -1);
+  let depth = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (c === '(') depth++; else if (c === ')') depth--;
+    else if (c === ',' && !depth) {
+      const a = inner.slice(0, i), b = inner.slice(i + 1);
+      const at0 = m[0].length + (a.length - a.trimStart().length), at1 = m[0].length + i + 1 + (b.length - b.trimStart().length);
+      return [{ text: a.trim(), at: at0 }, { text: b.trim(), at: at1 }];
+    }
+  }
+  return null;
 }
 
 function toPx(v) {
@@ -230,7 +345,7 @@ export function readJson(text) {
     return { kind: 'figma', tokens };
   }
   const leaves = jsonLeaves(text);
-  const dtcg = leaves.some((l) => l.path[l.path.length - 1] === '$value');
+  const dtcg = leaves.some((l) => l.path[l.path.length - 1] === '$value') || /"\$value"\s*:\s*\{/.test(text);
   const sd = !dtcg && leaves.some((l) => l.path[l.path.length - 1] === 'value');
   const byName = new Map();
   for (const l of leaves) {
@@ -257,7 +372,9 @@ export function readJson(text) {
       if (!o || typeof o !== 'object') return;
       if (o.$value && typeof o.$value === 'object' && (o.$value.hex || o.$value.components)) {
         const v = o.$value;
-        const c = v.hex ? readOne(v.hex) : readOne(`color(${v.colorSpace || 'srgb'} ${v.components.join(' ')})`);
+        const sp = String(v.colorSpace || 'srgb').toLowerCase(), k = (v.components || []).map((x) => (x === 'none' ? 0 : Number(x)));
+        const css = ['oklch', 'oklab', 'lab', 'lch', 'hwb'].includes(sp) ? `${sp}(${k.join(' ')})` : sp === 'hsl' ? `hsl(${k[0]} ${k[1]}% ${k[2]}%)` : `color(${sp} ${k.join(' ')})`;
+        const c = v.hex ? readOne(v.hex) : readOne(css);
         const modeIdx = path.findIndex((p) => MODE_WORD.test(p));
         if (c) tokens.push({ name: path.filter((_, k) => k !== modeIdx).join('.'), ...c, alpha: v.alpha ?? 1, mode: modeIdx >= 0 ? modeOfWord(path[modeIdx]) : 'light', raw: null, span: null, format: 'hex' });
         return;
@@ -351,8 +468,13 @@ export function readInput(text, max = 200000) {
     const c = readCss(s);
     out = { kind: /@theme\b/.test(s) ? 'tailwind4' : /\$[\w-]+\s*:/.test(s) ? 'scss' : /@[\w-]+\s*:/.test(s) && !/--[\w-]+\s*:/.test(s) ? 'less' : 'css', ...c };
   }
-  if (!out || !out.tokens.length && !(out.rules || []).length) out = { kind: 'list', ...readList(s), rules: [] };
-  const warnings = [];
-  if (out.tokens.length > MAX_TOKENS) { warnings.push(`Only the first ${MAX_TOKENS} colors are checked.`); out.tokens = out.tokens.slice(0, MAX_TOKENS); }
+  if (!out || (!out.tokens.length && !(out.rules || []).length && !out.vars)) out = { kind: 'list', ...readList(s), rules: [] };
+  const warnings = [...(out.notes || [])];
+  if (out.tokens.length > MAX_TOKENS) {
+    // keep the named roles (background, text, primary…) before the steps of colour scales (red-50 … red-950)
+    const step = (t) => (/(^|[-_.])(background|bg|foreground|fg|text|surface|border|primary|accent|muted|card|ring|input|link|destructive|error|success|warning)([-_.]|$)/i.test(t.name) ? 0 : /[-_.](50|[1-9]00|950|[1-9]|1[0-2])$/.test(t.name) ? 2 : 1);
+    out.tokens = out.tokens.map((t, i) => [t, i]).sort((a, b) => step(a[0]) - step(b[0]) || a[1] - b[1]).slice(0, MAX_TOKENS).sort((a, b) => a[1] - b[1]).map((x) => x[0]);
+    warnings.push(`Only ${MAX_TOKENS} of the colors are checked: the named ones first, then scale steps.`);
+  }
   return { ...out, warnings };
 }

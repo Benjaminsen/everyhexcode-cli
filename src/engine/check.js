@@ -21,8 +21,8 @@ export const MAX_PAIRS = 400;
 
 // ---------------------------------------------------------------------------------------------------------------- roles
 
-const BG_WORDS = ['background', 'bg', 'surface', 'canvas', 'card', 'popover', 'paper', 'page', 'backdrop', 'layer', 'container', 'sheet', 'panel', 'well', 'base', 'body', 'sidebar', 'header', 'footer', 'nav', 'modal', 'dialog', 'menu', 'tooltip', 'overlay', 'fill'];
-const FG_WORDS = ['foreground', 'fg', 'text', 'ink', 'on', 'label', 'heading', 'title', 'copy', 'content', 'caption', 'placeholder', 'icon'];
+const BG_WORDS = ['background', 'bg', 'surface', 'canvas', 'card', 'popover', 'paper', 'page', 'backdrop', 'layer', 'container', 'sheet', 'panel', 'well', 'sidebar', 'header', 'footer', 'nav', 'modal', 'dialog', 'menu', 'tooltip', 'overlay', 'fill'];
+const FG_WORDS = ['foreground', 'fg', 'text', 'ink', 'on', 'label', 'heading', 'title', 'copy', 'content', 'caption', 'placeholder', 'icon', 'font', 'type'];
 const BORDER_WORDS = ['border', 'outline', 'ring', 'divider', 'stroke', 'separator', 'input', 'focus', 'hairline', 'rule'];
 const ACCENT_WORDS = ['primary', 'secondary', 'tertiary', 'accent', 'brand', 'link', 'info', 'success', 'warning', 'warn', 'danger', 'error', 'destructive', 'positive', 'negative', 'critical', 'caution', 'notice', 'highlight', 'attention', 'neutral', 'muted', 'subtle'];
 const STATUS = ['info', 'success', 'warning', 'warn', 'danger', 'error', 'destructive', 'positive', 'negative', 'critical', 'caution', 'notice'];
@@ -41,9 +41,14 @@ export function words(name) {
  * What a token is for, from its name: background, text (and on what), border, accent, chart, or scale step. A name
  * without a role word gets one from its lightness later (bare palettes).
  */
+// a design system's raw scales (color.base.gray-900, primitives.blue.500, palette.red): values other tokens point to,
+// never a pair of their own
+const PRIMITIVE = /(^|[.\-_/])(base|primitives?|palette|core|ref|ramps?|scales?|raw|swatch(es)?)[.\-_/]./i;
+
 export function roleOf(name) {
   const w = words(name);
   if (!w.length) return { role: null };
+  if (PRIMITIVE.test(String(name).replace(/^(--|\$|@)/, '')) && !w.some((x) => ['on', 'foreground', 'fg', 'text', 'background', 'bg', 'surface', 'border'].includes(x))) return { role: 'scale', primitive: true };
   const has = (list) => w.some((x) => list.includes(x));
   const last = w[w.length - 1];
   // chart-1, series-3, data-2, categorical
@@ -54,8 +59,8 @@ export function roleOf(name) {
   if (w.length > 1 && ['foreground', 'fg', 'contrast', 'text', 'content', 'ink', 'icon'].includes(last) && !FG_WORDS.includes(w[0])) {
     return { role: 'text', on: w.slice(0, -1).join('-'), why: `named …-${last}` };
   }
-  if (FG_WORDS.includes(w[0]) && w.length > 1 && !has(BG_WORDS)) return { role: 'text', sub: w.slice(1).join('-') };
   if (has(BORDER_WORDS)) return { role: has(['input', 'ring', 'focus']) ? 'control' : 'border' };
+  if (FG_WORDS.includes(w[0]) && w.length > 1 && !has(BG_WORDS)) return { role: 'text', sub: w.slice(1).join('-') };
   if (has(FG_WORDS) && !has(BG_WORDS)) return { role: 'text' };
   if (has(BG_WORDS)) return { role: 'bg', accent: has(ACCENT_WORDS) };
   if (SCALE_STEP.test(last) && w.length > 1) return { role: 'scale', stem: w.slice(0, -1).join('-') };
@@ -139,24 +144,58 @@ export function plan(read, opts = {}) {
     const r = opts.roles?.[t.name] || opts.roles?.['#' + t.hex] || opts.roles?.[t.hex];
     if (r) { Object.assign(t, { role: r === 'ignore' ? 'ignore' : r, why: 'set by you', on: undefined, sub: undefined }); }
   }
-  // "muted" and "subtle" alone are a pale surface in some systems (shadcn's --muted) and grey text in others: lightness decides
-  for (const t of tokens) if (t.role === 'accent' && t.muted && t.why !== 'set by you') { t.role = L(t.hex) > 0.85 ? 'bg' : 'text'; t.why = 'muted: by lightness'; }
+  // "muted" and "subtle" alone are a pale surface in some systems (shadcn's --muted) and grey text in others: the light
+  // mode's lightness decides, and the role holds in every mode (dark --muted is still a surface)
+  const mutedRole = new Map();
+  for (const t of [...tokens].sort((a, b) => (a.mode === 'light' ? -1 : 1) - (b.mode === 'light' ? -1 : 1))) {
+    if (t.role !== 'accent' || !t.muted || t.why === 'set by you') continue;
+    if (!mutedRole.has(t.name)) mutedRole.set(t.name, (t.mode === 'dark' ? L(t.hex) < 0.3 : L(t.hex) > 0.85) ? 'bg' : 'text');
+    t.role = mutedRole.get(t.name); t.why = t.role === 'bg' ? 'muted: a surface' : 'muted: text';
+  }
+  // Bootstrap's --bs-body-color, --bs-secondary-color: "<x>-color" beside "<x>-bg" is the text colour on that background
+  for (const t of tokens) {
+    const m = String(t.name).match(/^(.*?)[-_]colou?r$/);
+    if (!m || t.why === 'set by you' || t.role === 'text') continue;
+    const bgTok = tokens.find((x) => x.mode === t.mode && (x.name === `${m[1]}-bg` || x.name === `${m[1]}-bg-color` || x.name === `${m[1]}-background`));
+    if (bgTok) { t.role = 'text'; t.on = words(bgTok.name).join('-'); t.why = `beside ${bgTok.name}`; }
+  }
+  // Tailwind v4's --color-background: var(--background) is the same colour under a second name: one of them is judged
+  const key = (t) => `${words(t.name).join('-')}|${t.mode}`;
+  const byKey = new Map();
+  for (const t of tokens) if (!t.via) byKey.set(key(t), t);
+  for (const t of tokens) if (t.via && byKey.has(key(t)) && byKey.get(key(t)) !== t && byKey.get(key(t)).hex === t.hex) { t.role = 'ignore'; t.why = `the same as ${byKey.get(key(t)).name}`; }
   const modes = [...new Set([...tokens.map((t) => t.mode), ...(read.rules || []).map((r) => r.mode)])].sort((a, b) => (a === 'light' ? -1 : b === 'light' ? 1 : 0));
   const pairs = [];
-  const seen = new Set();
+  const seen = new Map();
   const add = (fg, bg, kind, why, extra = {}) => {
     if (!fg || !bg || fg === bg || fg.role === 'ignore' || bg.role === 'ignore') return;
+    // a fully transparent colour paints nothing; a token that points to the other one is the same colour, not a pair
+    if (fg.alpha === 0 || bg.alpha === 0 || fg.via === bg.name || bg.via === fg.name) return;
+    // an alias (--color-background: var(--background), {color.base.gray-900}) is judged and fixed as its source
+    const asFg = fg, asBg = bg;
+    fg = canon(fg); bg = canon(bg);
+    if (fg === bg) return;
+    if (asFg !== fg) extra = { ...extra, asFg: asFg.name };
+    if (asBg !== bg) extra = { ...extra, asBg: asBg.name };
+    // the same colour on itself is never a design's pair (hidden text, a border that is the fill): only a pair you
+    // declare is judged then
+    if (fg.hex === bg.hex && (fg.alpha ?? 1) === (bg.alpha ?? 1) && why !== 'declared by you') return;
     const key = `${fg.id}>${bg.id}`;
-    if (seen.has(key)) { const p = pairs.find((x) => x.key === key); if (p && rank(kind) > rank(p.kind)) Object.assign(p, { kind, why }); return; }
-    seen.add(key);
-    pairs.push({ key, fg, bg, kind, why, mode: fg.mode, ...extra });
+    if (seen.has(key)) { const p = seen.get(key); if (p && rank(kind) > rank(p.kind)) Object.assign(p, { kind, why }); return; }
+    const p = { key, fg, bg, kind, why, mode: fg.mode, ...extra };
+    seen.set(key, p);
+    pairs.push(p);
   };
   const rank = (k) => ({ text: 3, large: 2, ui: 1, decor: 0 })[k] ?? 0;
+  const pairsLater = [];
+  const byName = new Map(tokens.map((t) => [`${t.name}|${t.mode}`, t]));
+  const canon = (t) => { let x = t, n = 0; while (x.via && n++ < 8) { const y = byName.get(`${x.via}|${x.mode}`) || byName.get(`${x.via}|light`); if (!y || y === x || y.role === 'ignore') break; x = y; } return x; };
 
   for (const mode of modes) {
     const all = tokens.filter((t) => t.mode === mode && t.role !== 'ignore');
     const named = new Map(all.map((t) => [words(t.name).join('-'), t]));
-    const unnamed = all.every((t) => t.unnamed || t.role == null);
+    // no roles to go on (a bare list, or a small set of raw colours such as a token file's core palette): lightness decides
+    const unnamed = all.every((t) => t.unnamed || t.role == null) || (all.length <= 12 && all.every((t) => t.role === 'scale' || t.role == null));
     // a bare palette: roles by lightness (the lightest is the background, the darkest the text)
     if (unnamed && !read.rules?.length) {
       const by = [...all].sort((a, b) => L(b.hex) - L(a.hex));
@@ -168,14 +207,32 @@ export function plan(read, opts = {}) {
       }
     }
     const bgs = all.filter((t) => t.role === 'bg' && !t.accent);
-    const main = pickMain(bgs.length ? bgs : all, mode);
+    const modeRules = (read.rules || []).filter((x) => (x.mode === mode || (mode === 'dark' && x.mode === 'light' && !x.scoped)));
+    // the page's own background, when a stylesheet sets it on html, body or :root and no token names one
+    const pageRule = [...modeRules].reverse().find((x) => PAGE_SEL.test(x.selector) && x.bg && !x.bg.image && x.bg.alpha !== 0);
+    let main = bgs.length ? pickMain(bgs, mode) : null;
+    if (!main && pageRule) main = pageRule.bg.token ? all.find((t) => t.name === pageRule.bg.token) : synth(tokens, pageRule.bg, mode, pageRule.selector);
+    if (!main) main = pickMain(all, mode);
+    // CSS that sets text colours but no background at all: the browser's white page is what they sit on
+    if (!main && mode === 'light' && modeRules.some((x) => x.fg)) { main = synth(tokens, { hex: 'ffffff', alpha: 1 }, mode, 'the browser default'); main.name = 'page background (white, the browser default)'; main.span = null; }
+    // a page background with no text colour set on the page: the browser's default text is what sits on it
+    if (pageRule && main && !modeRules.some((x) => PAGE_SEL.test(x.selector) && x.fg)) {
+      const dflt = synth(tokens, { hex: mode === 'dark' ? 'ffffff' : '000000', alpha: 1 }, mode, 'the browser default');
+      dflt.name = mode === 'dark' ? 'default text (white)' : 'default text (black)'; dflt.span = null;
+      pairsLater.push([dflt, main]);
+    }
     const texts = all.filter((t) => t.role === 'text');
     // 1. CSS rules: what a selector really sets
-    for (const r of (read.rules || []).filter((x) => (x.mode === mode || (mode === 'dark' && x.mode === 'light' && !x.scoped)) && !(UTILITY.test(x.selector) && !(x.fg && x.bg)) && !(mode === 'dark' && x.mode === 'light' && ![x.fg, x.bg, x.border, x.outline].some((v) => v?.token)))) {
+    for (const [a, b] of pairsLater.splice(0)) add(a, b, 'text', "the browser's default text on the page background");
+    for (const r of modeRules.filter((x) => !(UTILITY.test(x.selector) && !(x.fg && x.bg)) && !(mode === 'dark' && x.mode === 'light' && ![x.fg, x.bg, x.border, x.outline].some((v) => v?.token)))) {
       const tok = (v) => (v && !v.image ? (all.find((t) => t.name === v.token) || synth(tokens, v, mode, r.selector)) : null);
-      const bg = r.bg && !r.bg.image ? tok(r.bg) : main;
+      // a text colour alone is checked on the page background, unless the selector says it sits on something else
+      if (!r.bg && r.fg && (ELSEWHERE.test(r.selector) || TEXT_UTILITY.test(r.selector))) continue;
+      // a rule that sets only the text colour of a state (.button:hover) takes the background its base rule sets
+      const base = !r.bg ? modeRules.find((x) => x !== r && x.bg && !x.bg.image && baseSel(x.selector) === baseSel(r.selector)) : null;
+      const bg = r.bg && !r.bg.image ? tok(r.bg) : base ? tok(base.bg) : main;
       const large = r.fontSize ? isLarge(r.fontSize, r.fontWeight) : false;
-      if (r.fg) add(tok(r.fg), bg, large ? 'large' : 'text', `${r.selector} sets ${r.bg ? 'color and background' : 'color'}`, { selector: r.selector, image: r.bg?.image });
+      if (r.fg) add(tok(r.fg), bg, large ? 'large' : 'text', `${r.selector} sets ${r.bg ? 'color and background' : 'color'}`, { selector: r.selector, image: r.bg?.image, guess: !r.bg && !base });
       for (const k of ['border', 'outline']) if (r[k] && bg) add(tok(r[k]), bg, /input|select|textarea|button|focus|checkbox|radio/i.test(r.selector) || k === 'outline' ? 'ui' : 'decor', `${r.selector} sets ${k}`, { selector: r.selector });
     }
     // 2. names: X-foreground on X, on-X on X
@@ -185,17 +242,18 @@ export function plan(read, opts = {}) {
           || [...named.entries()].find(([k, v]) => v !== t && v.role !== 'text' && (k.endsWith(t.on) || t.on.endsWith(k)))?.[1];
         if (base && base !== t) add(t, base, 'text', `${t.name} is named for ${base.name}`);
         // muted-foreground and secondary text are used on the page background too
-        if (main && base !== main && (!base || /muted|subtle|secondary|surface|card|popover|background/.test(t.on))) add(t, main, 'text', `${t.name} on the page background`);
+        if (main && base !== main && (!base || /muted|subtle|secondary|surface|card|popover|background/.test(t.on))) add(t, main, 'text', `${t.name} on the page background`, { guess: !base });
       } else if (main) {
         add(t, main, 'text', 'text on the page background');
-        for (const b of bgs) if (b !== main && !hasOwnText(b, texts)) add(t, b, 'text', `text on ${b.name}`);
+        if (bgs.length <= 6) for (const b of bgs) if (b !== main && !hasOwnText(b, texts)) add(t, b, 'text', `text on ${b.name}`);
       }
     }
     // 3. accents and status colours: as text or icons on the background (links, error text), and as backgrounds of their own text
     for (const t of all.filter((x) => x.role === 'accent')) {
       if (!main || t === main) continue;
-      const own = texts.find((x) => x.on && (named.get(x.on) === t));
-      if (own) continue; // a filled colour with its own text colour: rule 2 covers it
+      const own = texts.find((x) => x.on && (named.get(x.on) === t || words(t.name).join('-') === x.on));
+      // a filled colour with its own text colour: rule 2 covers it; a status colour is also used as text (error messages)
+      if (own) { if (t.status) add(t, main, 'text', 'status colours are also text (error and warning messages)'); continue; }
       add(t, main, words(t.name).includes('link') || t.status ? 'text' : 'ui', words(t.name).includes('link') ? 'links are text' : t.status ? 'status text and icons' : 'buttons, icons and accents on the background');
       if (unnamed) for (const x of texts) add(x, t, 'text', 'text on an accent', { optional: true });
     }
@@ -225,6 +283,13 @@ export function plan(read, opts = {}) {
   return { tokens, pairs: pairs.slice(0, MAX_PAIRS), groups, modes, tooMany: pairs.length > MAX_PAIRS };
 }
 
+// a text-colour utility somewhere in a selector (Tailwind's .hover\:text-red-500, .text-neutral-400\!, variants)
+const TEXT_UTILITY = /(^|[\s.:(*,>])\.?[\w\\:\[\]\.*-]*text-[\w\\/.!\[\]#-]+/;
+/** The first selector of a list, without its pseudo-classes: ".btn:hover, .btn:focus" → ".btn". */
+const baseSel = (sel) => String(sel).split(',')[0].trim().replace(/::?[\w-]+(\([^)]*\))?/g, '').trim();
+const PAGE_SEL = /^(html|body|:root)(\s*,\s*(html|body|:root))*$/i;
+const ELSEWHERE = /invers|revers|on-dark|on-light|knockout|\.dark\b|dark-mode|-dark\b|::selection|disabled/i;
+
 function pickMain(list, mode) {
   const exact = list.find((t) => /^(background|bg|page|canvas|body|surface|base|background-default|bg-default|surface-default)$/.test(words(t.name).join('-')));
   if (exact) return exact;
@@ -240,7 +305,8 @@ function findTok(all, ref) {
 }
 /** A colour a CSS rule writes out literally becomes a token of its own, so it can be judged and fixed. */
 function synth(tokens, v, mode, selector) {
-  let t = tokens.find((x) => !x.name.startsWith('--') && x.hex === v.hex && x.mode === mode && x.literal);
+  // one token per colour, opacity and mode: #000 at 0% (transparent) is not #000
+  let t = tokens.find((x) => x.literal && x.hex === v.hex && (x.alpha ?? 1) === (v.alpha ?? 1) && x.mode === mode);
   if (!t) { t = { name: `#${v.hex}`, hex: v.hex, alpha: v.alpha, mode, id: tokens.length, role: 'literal', literal: true, raw: v.raw || null, span: v.span || null, format: v.format, where: selector }; tokens.push(t); }
   return t;
 }
@@ -254,14 +320,19 @@ export function judge(p, target = 'AA', apca) {
   const ratio = contrast(fgHex, bgHex);
   const need = needOf(p.kind, target);
   const out = {
-    fg: { name: p.fg.name, hex: p.fg.hex, alpha: p.fg.alpha ?? 1, shown: fgHex },
-    bg: { name: p.bg.name, hex: p.bg.hex, alpha: p.bg.alpha ?? 1, shown: bgHex },
+    // shown under the name the design uses (an alias), fixed at its source
+    fg: { name: p.asFg || p.fg.name, hex: p.fg.hex, alpha: p.fg.alpha ?? 1, shown: fgHex, ...(p.asFg ? { source: p.fg.name } : {}) },
+    bg: { name: p.asBg || p.bg.name, hex: p.bg.hex, alpha: p.bg.alpha ?? 1, shown: bgHex, ...(p.asBg ? { source: p.bg.name } : {}) },
     mode: p.mode, kind: p.kind, why: p.why, ratio, need, pass: ratio >= need,
     level: ratio >= 7 ? 'AAA' : ratio >= 4.5 ? 'AA' : ratio >= 3 ? 'AA large' : 'fail',
     margin: r1(ratio - need, 2),
   };
   if (p.image) out.image = true;
-  if (p.optional) out.optional = true;
+  // a combination only a bare palette suggests is reported, not judged: pass is null
+  if (p.optional) { out.optional = true; out.pass = null; }
+  // text set without a background and nearly the page's own colour must sit on something the stylesheets do not show
+  // (a dark header, a coloured badge): its background is unknown, so it is listed, not judged
+  if (p.guess && ratio < 1.2) { out.optional = true; out.pass = null; out.unknownBg = true; out.why = `${p.why}; nearly the page color, so it sits on a background the stylesheets do not show`; }
   if (apca) out.lc = apca(fgHex, bgHex);
   out.glare = glareRatio(fgHex, bgHex);
   // the worst a colour-vision deficiency does to this pair (red text on dark goes darker for protans)
@@ -355,7 +426,8 @@ export function feel(hexes) {
   const ls = o.map((x) => x.l).sort((a, b) => a - b);
   const lightRange = r1(ls[ls.length - 1] - ls[0], 2);
   const steps = ls.filter((l, i) => !i || l - ls[i - 1] >= 0.08).length;
-  if (lightRange < 0.5 && o.length >= 2) notes.push({ kind: 'flat', text: `The lightest and darkest colours are only ${Math.round(lightRange * 100)} points apart in lightness, so no pair will carry body text. Add a near-black or near-white.` });
+  const best = o.length >= 2 ? contrast(o.reduce((a, b) => (a.l > b.l ? a : b)).hex, o.reduce((a, b) => (a.l < b.l ? a : b)).hex) : 21;
+  if (lightRange < 0.5 && o.length >= 2 && best < 4.5) notes.push({ kind: 'flat', text: `The lightest and darkest colours are only ${Math.round(lightRange * 100)} points apart in lightness, so no pair will carry body text. Add a near-black or near-white.` });
   else if (steps < Math.min(3, o.length)) notes.push({ kind: 'steps', text: 'Few distinct lightness steps: headings, text and surfaces will be hard to tell apart. Spread the lightness more.' });
   // vibration: saturated opposite hues at similar lightness flicker where they meet
   const vib = [];
@@ -384,15 +456,18 @@ const WEIGHT = { text: 1, literal: 1.1, control: 1.2, border: 1.2, chart: 1.6, b
 /** The nearest lightness (hue and chroma kept, chroma lowered only to fit sRGB) at which a test passes, or null. */
 function nearestL(hex, test) {
   const o = toOklch(col(hex)), c = o.c || 0, h = o.h || 0;
-  for (let d = 0.002; d <= 1; d += 0.002) {
-    for (const s of [1, -1]) {
-      const l = o.l + s * d;
-      if (l < 0 || l > 1) continue;
-      const x = fromOklch(l, c, h);
-      if (test(x)) return x;
-    }
+  const at = (l) => fromOklch(l, c, h);
+  // coarse steps to find the first passing lightness each way, then fine steps back towards the start
+  let best = null;
+  for (const s of [1, -1]) {
+    let hit = null;
+    for (let d = 0.01; d <= 1.001; d += 0.01) { const l = o.l + s * d; if (l < -0.001 || l > 1.001) break; if (test(at(Math.min(1, Math.max(0, l))))) { hit = d; break; } }
+    if (hit == null) continue;
+    let d = hit;
+    for (let f = hit - 0.001; f > hit - 0.01 && f > 0; f -= 0.001) { if (test(at(Math.min(1, Math.max(0, o.l + s * f))))) d = f; else break; }
+    if (!best || d < best.d) best = { d, x: at(Math.min(1, Math.max(0, o.l + s * d))) };
   }
-  return null;
+  return best && test(best.x) ? best.x : null;
 }
 
 /**
@@ -415,10 +490,11 @@ export function solve(planned, target = 'AA', lock = []) {
     if (!failing.length) break;
     let best = null;
     const cands = new Map();
-    for (const p of failing) for (const t of [p.fg, p.bg]) { const tk = byId.get(t.id) || t; if (!tk.inherited && !locked.has(tk.name) && !locked.has(tk.hex) && !locked.has('#' + tk.hex)) cands.set(tk.id, tk); }
+    for (const p of failing.slice(0, 40)) for (const t of [p.fg, p.bg]) { const tk = byId.get(t.id) || t; if (!tk.inherited && !locked.has(tk.name) && !locked.has(tk.hex) && !locked.has('#' + tk.hex)) cands.set(tk.id, tk); }
     for (const t of cands.values()) {
       const mine = pairs.filter((p) => p.fg.id === t.id || p.bg.id === t.id);
-      const to = nearestL(value.get(t.id), (x) => { const v = new Map(value); v.set(t.id, x); return mine.every((p) => ok(p, v)); });
+      const prev = value.get(t.id);
+      const to = nearestL(prev, (x) => { value.set(t.id, x); const r = mine.every((p) => ok(p)); value.set(t.id, prev); return r; });
       if (!to) continue;
       const fixes = failing.filter((p) => p.fg.id === t.id || p.bg.id === t.id).length;
       const cost = (dE(value.get(t.id), to) * (WEIGHT[t.role] || 1.5)) / fixes;
@@ -432,7 +508,7 @@ export function solve(planned, target = 'AA', lock = []) {
     .filter((c) => c.from !== c.to);
   const remaining = pairs.filter((p) => !ok(p)).map((p) => ({ fg: p.fg.name, bg: p.bg.name, mode: p.mode, kind: p.kind,
     // what one side alone would need, ignoring the other pairs
-    suggest: { fg: nearestL(value.get(p.fg.id), (x) => ok(p, new Map(value).set(p.fg.id, x))), bg: nearestL(value.get(p.bg.id), (x) => ok(p, new Map(value).set(p.bg.id, x))) } }));
+    suggest: { fg: nearestL(value.get(p.fg.id), (x) => ok(p, new Map(value).set(p.fg.id, x))), bg: nearestL(value.get(p.bg.id), (x) => ok(p, new Map(value).set(p.bg.id, x))) } })).slice(0, 60);
   return { target, changes, remaining, values: value };
 }
 
@@ -519,7 +595,7 @@ export function summarize(r) {
   const fail = judged.filter((p) => !p.pass);
   const pass = judged.length - fail.length;
   const lines = [];
-  if (!r.input.colors) return { pass: 0, fail: 0, total: 0, issues: 0, text: 'No colors found. Paste hex codes, CSS, Tailwind config or design tokens.', lines: [] };
+  if (!r.input.colors) return { pass: 0, fail: 0, total: 0, issues: 0, text: r.input.rules ? `${r.input.rules} CSS rules read, but none sets a color that can be paired (colors set by scripts or images are not seen).` : 'No colors found. Paste hex codes, CSS, Tailwind config or design tokens.', lines: [] };
   if (!judged.length) lines.push(`${r.input.colors} colors read, but no pairs to judge: tell the checker which colors are text and which are backgrounds.`);
   else lines.push(`${judged.length} ${judged.length === 1 ? 'pair' : 'pairs'} checked against ${r.standard}: ${pass} pass, ${fail.length} fail.`);
   if (fail.length) {
@@ -529,7 +605,7 @@ export function summarize(r) {
   }
   if (r.fix.changes.length) {
     const ch = r.fix.changes;
-    lines.push(`Changing ${ch.length} ${ch.length === 1 ? 'color' : 'colors'} fixes ${r.fix.remaining.length ? 'most of it' : 'every failing pair'}: ${ch.slice(0, 4).map((c) => `${c.name === '#' + c.from ? '' : c.name + ' '}#${c.from} → #${c.to} (ΔE ${c.deltaE})`).join(', ')}${ch.length > 4 ? ', …' : ''}.`);
+    lines.push(`Changing ${ch.length} ${ch.length === 1 ? 'color' : 'colors'} fixes ${r.fix.remaining.length ? 'most of it' : 'every failing pair'}: ${ch.slice(0, 4).map((c) => `${c.name === '#' + c.from ? '' : c.name + ' '}${r.input.modes.length > 1 ? `(${c.mode}) ` : ''}#${c.from} → #${c.to} (ΔE ${c.deltaE})`).join(', ')}${ch.length > 4 ? ', …' : ''}.`);
   }
   if (r.fix.remaining.length) lines.push(`${r.fix.remaining.length} ${r.fix.remaining.length === 1 ? 'pair needs' : 'pairs need'} both colors to move; see the suggestions.`);
   const cvd = r.pairs.filter((p) => p.pass && p.vision && p.vision.ratio < p.need);

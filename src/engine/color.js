@@ -87,7 +87,11 @@ const converters = {};
 function useConv(mode) { return (converters[mode] ||= converter(mode)); }
 
 /** WCAG 2.x contrast ratio, two decimals. */
-export function contrast(a, b) { return r1(wcagContrast(col(a), col(b)), 2); }
+// Rounded to two decimals, but never up onto a WCAG threshold: 4.499 shows as 4.49 and fails, as WebAIM's does
+export function contrast(a, b) {
+  const x = wcagContrast(col(a), col(b)), r = r1(x, 2);
+  return [3, 4.5, 7].some((t) => x < t && r >= t) ? Math.floor(x * 100) / 100 : r;
+}
 
 /** WCAG 2.x grades for a ratio. */
 export function wcagGrades(ratio) {
@@ -278,7 +282,7 @@ export function fixContrast(hex, against, target = 4.5) {
   const bgL = useConv('oklch')(col(against)).l;
   const dir = o.l > bgL ? 1 : -1;
   for (const d of [dir, -dir]) {
-    for (let l = o.l; l >= 0 && l <= 1; l += d * 0.005) {
+    for (let l = Math.min(1, Math.max(0, o.l)); l >= 0 && l <= 1; l += d * 0.005) {
       const x = fromOklch(l, o.c, o.h || 0);
       if (contrast(x, against) >= target) return x;
     }

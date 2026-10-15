@@ -7,11 +7,12 @@ It runs on your machine and in your own CI. Nothing is uploaded. The engine is t
 ```
 $ npx everyhexcode check src/styles
 src/styles/globals.css (css, 39 colors, light and dark)
-  ✗ --muted-foreground on --background: 2.97:1, needs 4.5:1 (text)  src/styles/globals.css:12
+  ✗ --muted-foreground on --muted [light]: 2.7:1, needs 4.5:1 (text)  src/styles/globals.css:11
       fix: --muted-foreground → #6f6f77
-  ✗ --input on --background: 1.27:1, needs 3:1 (ui)  src/styles/globals.css:17
-      fix: --input → #949497
-  24 pass, 10 fail against WCAG 2 AA
+  ✗ --muted-foreground on --background [light]: 2.97:1, needs 4.5:1 (text)  src/styles/globals.css:11
+      fix: --muted-foreground → #6f6f77
+  …
+  24 pass, 12 fail against WCAG 2 AA
 ```
 
 ## What it reads

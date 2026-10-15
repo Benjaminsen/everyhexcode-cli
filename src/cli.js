@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { applyFix, check, VERSION as ENGINE } from './engine/check.js';
-import { expand, groups } from './files.js';
+import { expand, groups, skipped } from './files.js';
 import * as out from './output.js';
 import { renderScan } from './render.js';
 
@@ -92,6 +92,9 @@ async function main() {
   const cmd = ['check', 'fix', 'scan'].includes(a._[0]) ? a._.shift() : 'check';
   if (a.help) { console.log(HELP); return 0; }
   if (a.version) { console.log(`everyhexcode ${VERSION} (engine ${ENGINE})`); return 0; }
+  // a value that is not one of the choices is a mistake in the command, not a reason to fall back silently
+  const bad = [['target', ['AA', 'AAA', 'aa', 'aaa']], ['format', ['text', 'json', 'sarif', 'markdown', 'github']], ['fail-on', ['fail', 'warn', 'none']]].find(([k, ok]) => a[k] !== undefined && !ok.includes(String(a[k])));
+  if (bad) { console.error(`everyhexcode: --${bad[0]} must be one of ${bad[0] === 'target' ? 'AA, AAA' : bad[1].join(', ')}`); return 2; }
   const cfg = loadConfig(a.config);
   const target = String(a.target || cfg.target || 'AA').toUpperCase() === 'AAA' ? 'AAA' : 'AA';
   const lock = [...(cfg.lock || []), ...String(a.lock || '').split(',').filter(Boolean)];
@@ -116,10 +119,14 @@ async function main() {
   const files = expand(a._.length ? a._ : cfg.files || ['.']);
   if (!files.length) { console.error('No CSS, SCSS, Less, token or Tailwind config files found.'); return 2; }
   const results = groups(files).map((group) => ({ group, report: check(group.text, { ...opts, label: path.basename(group.label) }) })).filter(({ report }) => report.input.colors);
-  if (!results.length) { console.error(`No colors found in ${files.length} file(s).`); return 2; }
+  for (const x of skipped) console.error(`everyhexcode: skipped ${x}`);
+  if (!results.length) { console.error(`No colors found in ${files.length} file(s)${skipped.length ? ` (${skipped.length} skipped)` : ''}: nothing to check.`); return skipped.length ? 2 : 0; }
   if (cmd === 'fix' && a.write) {
     const lines = results.flatMap(({ group, report }) => writeBack(group, report));
-    console.log(lines.length ? `Changed:\n${lines.map((l) => '  ' + l).join('\n')}` : 'Nothing to change.');
+    // values with no place in the text (Figma variables, values reached through an alias written as hsl(var()))
+    const unwritten = results.flatMap(({ report }) => report.fix.changes.filter((c) => !c.span).map((c) => `${c.name}${report.input.modes.length > 1 ? ` (${c.mode})` : ''}: #${c.from} → #${c.to}`));
+    console.log(lines.length ? `Changed:\n${lines.map((l) => '  ' + l).join('\n')}` : unwritten.length ? 'No file text to change.' : 'Nothing to change.');
+    if (unwritten.length) console.log(`Change these where they are defined (they have no value in the file text):\n${unwritten.map((l) => '  ' + l).join('\n')}`);
     const again = groups(files).map((group) => ({ group, report: check(group.text, { ...opts, label: path.basename(group.label) }) }));
     emit(again, a, VERSION);
     return exitCode(again, failOn);
@@ -133,4 +140,5 @@ async function main() {
   return exitCode(results, failOn);
 }
 
+process.stdout.on('error', (e) => { if (e.code === 'EPIPE') process.exit(process.exitCode || 0); throw e; });
 main().then((code) => { process.exitCode = code; }, (e) => { console.error(`everyhexcode: ${e.message}`); process.exitCode = 2; });

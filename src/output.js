@@ -19,7 +19,7 @@ export function whereOf(group, report, pair) {
 export const failing = (r) => r.pairs.filter((p) => !p.pass && p.kind !== 'decor' && !p.optional);
 export const lookAlike = (r) => r.collisions.filter((c) => c.common);
 const link = (r) => `${SITE}/color-checker`;
-const fixOf = (r, p) => r.fix.changes.filter((c) => c.mode === p.mode && (c.name === p.fg.name || c.name === p.bg.name)).map((c) => `${c.name} → #${c.to}`).join(', ');
+const fixOf = (r, p) => r.fix.changes.filter((c) => c.mode === p.mode && (c.name === p.fg.name || c.name === p.bg.name)).map((c) => `${c.name} → #${c.to}`).filter((x, i, l) => l.indexOf(x) === i).join(', ');
 
 export function text(results, opts) {
   const out = [];
@@ -63,13 +63,15 @@ export function markdown(results) {
 }
 
 const esc = (s) => String(s).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+// property values (file, title) also escape : and , (GitHub's workflow command format)
+const escP = (s) => esc(s).replace(/:/g, '%3A').replace(/,/g, '%2C');
 export function github(results) {
   const out = [];
   for (const { group, report: r } of results) {
     for (const p of failing(r)) {
       const at = whereOf(group, r, p), fx = fixOf(r, p);
-      const loc = /^https?:/.test(at.file) ? '' : `file=${rel(at.file)},line=${at.line},col=${at.column},`;
-      out.push(`::error ${loc}title=Contrast ${p.ratio}:1 (needs ${p.need}:1)::${esc(`${p.fg.name} on ${p.bg.name}${r.input.modes.length > 1 ? ` (${p.mode} mode)` : ''}${loc ? '' : ` at ${(p.why || '').replace(/ sets .*$/, '')}`} is ${p.ratio}:1; ${p.kind === 'ui' ? 'UI parts need 3:1 (WCAG 1.4.11)' : `text needs ${p.need}:1 (WCAG 1.4.3)`}.${fx ? ` Nearest passing: ${fx}.` : ''}`)}`);
+      const loc = /^https?:/.test(at.file) ? '' : `file=${escP(rel(at.file))},line=${at.line},col=${at.column},`;
+      out.push(`::error ${loc}title=${escP(`Contrast ${p.ratio}:1 (needs ${p.need}:1)`)}::${esc(`${p.fg.name} on ${p.bg.name}${r.input.modes.length > 1 ? ` (${p.mode} mode)` : ''}${loc ? '' : ` at ${(p.why || '').replace(/ sets .*$/, '')}`} is ${p.ratio}:1; ${p.kind === 'ui' ? 'UI parts need 3:1 (WCAG 1.4.11)' : `text needs ${p.need}:1 (WCAG 1.4.3)`}.${fx ? ` Nearest passing: ${fx}.` : ''}`)}`);
     }
     for (const c of lookAlike(r)) out.push(`::warning title=Colors look alike::${esc(`${c.a.name} and ${c.b.name} look alike with ${c.worst.label.toLowerCase()} (ΔE ${c.worst.d}). Do not let color alone tell them apart (WCAG 1.4.1).`)}`);
   }

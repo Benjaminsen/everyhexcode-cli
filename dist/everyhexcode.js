@@ -1864,6 +1864,198 @@ var serializeHex = (color) => {
 };
 var formatHex = (c2) => serializeHex(rgb(c2));
 
+// node_modules/culori/src/map.js
+var mapper = (fn4, mode = "rgb", preserve_mode = false) => {
+  let channels = mode ? getMode(mode).channels : null;
+  let conv = mode ? converter_default(mode) : prepare_default;
+  return (color) => {
+    let conv_color = conv(color);
+    if (!conv_color) {
+      return void 0;
+    }
+    let res = (channels || getMode(conv_color.mode).channels).reduce(
+      (res2, ch) => {
+        let v = fn4(conv_color[ch], ch, conv_color, mode);
+        if (v !== void 0 && !isNaN(v)) {
+          res2[ch] = v;
+        }
+        return res2;
+      },
+      { mode: conv_color.mode }
+    );
+    if (!preserve_mode) {
+      return res;
+    }
+    let prep = prepare_default(color);
+    if (prep && prep.mode !== res.mode) {
+      return converter_default(prep.mode)(res);
+    }
+    return res;
+  };
+};
+var mapAlphaMultiply = (v, ch, c2) => {
+  if (ch !== "alpha") {
+    return (v || 0) * (c2.alpha !== void 0 ? c2.alpha : 1);
+  }
+  return v;
+};
+var mapAlphaDivide = (v, ch, c2) => {
+  if (ch !== "alpha" && c2.alpha !== 0) {
+    return (v || 0) / (c2.alpha !== void 0 ? c2.alpha : 1);
+  }
+  return v;
+};
+
+// node_modules/culori/src/util/normalizePositions.js
+var normalizePositions = (arr) => {
+  if (arr[0] === void 0) {
+    arr[0] = 0;
+  }
+  if (arr[arr.length - 1] === void 0) {
+    arr[arr.length - 1] = 1;
+  }
+  let i = 1;
+  let j;
+  let from_idx;
+  let from_pos;
+  let inc;
+  while (i < arr.length) {
+    if (arr[i] === void 0) {
+      from_idx = i;
+      from_pos = arr[i - 1];
+      j = i;
+      while (arr[j] === void 0) j++;
+      inc = (arr[j] - from_pos) / (j - i + 1);
+      while (i < j) {
+        arr[i] = from_pos + (i + 1 - from_idx) * inc;
+        i++;
+      }
+    } else if (arr[i] < arr[i - 1]) {
+      arr[i] = arr[i - 1];
+    }
+    i++;
+  }
+  return arr;
+};
+var normalizePositions_default = normalizePositions;
+
+// node_modules/culori/src/easing/midpoint.js
+var midpoint = (H = 0.5) => (t) => H <= 0 ? 1 : H >= 1 ? 0 : Math.pow(t, Math.log(0.5) / Math.log(H));
+var midpoint_default = midpoint;
+
+// node_modules/culori/src/interpolate/interpolate.js
+var isfn = (o) => typeof o === "function";
+var isobj = (o) => o && typeof o === "object";
+var isnum = (o) => typeof o === "number";
+var interpolate_fn = (colors, mode = "rgb", overrides, premap) => {
+  let def = getMode(mode);
+  let conv = converter_default(mode);
+  let conv_colors = [];
+  let positions = [];
+  let fns = {};
+  colors.forEach((val) => {
+    if (Array.isArray(val)) {
+      conv_colors.push(conv(val[0]));
+      positions.push(val[1]);
+    } else if (isnum(val) || isfn(val)) {
+      fns[positions.length] = val;
+    } else {
+      conv_colors.push(conv(val));
+      positions.push(void 0);
+    }
+  });
+  normalizePositions_default(positions);
+  let fixed = def.channels.reduce((res, ch) => {
+    let ffn;
+    if (isobj(overrides) && isobj(overrides[ch]) && overrides[ch].fixup) {
+      ffn = overrides[ch].fixup;
+    } else if (isobj(def.interpolate[ch]) && def.interpolate[ch].fixup) {
+      ffn = def.interpolate[ch].fixup;
+    } else {
+      ffn = (v) => v;
+    }
+    res[ch] = ffn(conv_colors.map((color) => color[ch]));
+    return res;
+  }, {});
+  if (premap) {
+    let ccolors = conv_colors.map((color, idx) => {
+      return def.channels.reduce(
+        (c2, ch) => {
+          c2[ch] = fixed[ch][idx];
+          return c2;
+        },
+        { mode }
+      );
+    });
+    fixed = def.channels.reduce((res, ch) => {
+      res[ch] = ccolors.map((c2) => {
+        let v = premap(c2[ch], ch, c2, mode);
+        return isNaN(v) ? void 0 : v;
+      });
+      return res;
+    }, {});
+  }
+  let interpolators = def.channels.reduce((res, ch) => {
+    let ifn;
+    if (isfn(overrides)) {
+      ifn = overrides;
+    } else if (isobj(overrides) && isfn(overrides[ch])) {
+      ifn = overrides[ch];
+    } else if (isobj(overrides) && isobj(overrides[ch]) && overrides[ch].use) {
+      ifn = overrides[ch].use;
+    } else if (isfn(def.interpolate[ch])) {
+      ifn = def.interpolate[ch];
+    } else if (isobj(def.interpolate[ch])) {
+      ifn = def.interpolate[ch].use;
+    }
+    res[ch] = ifn(fixed[ch]);
+    return res;
+  }, {});
+  let n = conv_colors.length - 1;
+  return (t) => {
+    t = Math.min(Math.max(0, t), 1);
+    if (t <= positions[0]) {
+      return conv_colors[0];
+    }
+    if (t > positions[n]) {
+      return conv_colors[n];
+    }
+    let idx = 0;
+    while (positions[idx] < t) idx++;
+    let start = positions[idx - 1];
+    let delta = positions[idx] - start;
+    let P = (t - start) / delta;
+    let fn4 = fns[idx] || fns[0];
+    if (fn4 !== void 0) {
+      if (isnum(fn4)) {
+        fn4 = midpoint_default((fn4 - start) / delta);
+      }
+      P = fn4(P);
+    }
+    let t0 = (idx - 1 + P) / n;
+    return def.channels.reduce(
+      (res, channel) => {
+        let val = interpolators[channel](t0);
+        if (val !== void 0) {
+          res[channel] = val;
+        }
+        return res;
+      },
+      { mode }
+    );
+  };
+};
+var interpolate = (colors, mode = "rgb", overrides) => interpolate_fn(colors, mode, overrides);
+var interpolateWith = (premap, postmap) => (colors, mode = "rgb", overrides) => {
+  let post = postmap ? mapper(postmap, mode) : void 0;
+  let it = interpolate_fn(colors, mode, overrides, premap);
+  return post ? (t) => post(it(t)) : it;
+};
+var interpolateWithPremultipliedAlpha = interpolateWith(
+  mapAlphaMultiply,
+  mapAlphaDivide
+);
+
 // node_modules/culori/src/clamp.js
 var rgb2 = converter_default("rgb");
 var fixup_rgb = (c2) => {
@@ -2651,7 +2843,8 @@ function useConv(mode) {
   return converters2[mode] ||= converter_default(mode);
 }
 function contrast2(a, b) {
-  return r1(contrast(col(a), col(b)), 2);
+  const x = contrast(col(a), col(b)), r2 = r1(x, 2);
+  return [3, 4.5, 7].some((t) => x < t && r2 >= t) ? Math.floor(x * 100) / 100 : r2;
 }
 var inSrgb = inGamut("rgb");
 function moods(hexes) {
@@ -2678,7 +2871,7 @@ function moods(hexes) {
 // cli/src/engine/check-input.js
 var MAX_TOKENS = 300;
 var CSS_NAMES = new Set("aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green greenyellow grey honeydew hotpink indianred indigo ivory khaki lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen magenta maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen mediumslateblue mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin navajowhite navy oldlace olive olivedrab orange orangered orchid palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown seagreen seashell sienna silver skyblue slateblue slategray slategrey snow springgreen steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow yellowgreen".split(" "));
-var FN = /^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/i;
+var FN = /^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix)\(/i;
 var BARE_HSL = /^-?[\d.]+(?:deg)?\s+[\d.]+%\s+[\d.]+%(?:\s*\/\s*[\d.]+%?)?$/;
 function looksColor(raw) {
   const v = String(raw).trim();
@@ -2690,24 +2883,69 @@ function looksColor(raw) {
 }
 function formatOf(raw) {
   const v = String(raw).trim().toLowerCase();
-  if (v.startsWith("#")) return v.length <= 5 || v.length === 7 ? raw.trim() === raw.trim().toUpperCase() ? "HEX" : "hex" : "hex8";
+  if (v.startsWith("#")) return v.length <= 5 || v.length === 7 ? /[A-F]/.test(raw) && !/[a-f]/.test(raw) ? "HEX" : "hex" : "hex8";
   if (BARE_HSL.test(v)) return "hsl-bare";
   const m = v.match(/^([a-z]+)\(/);
   if (m) return m[1].replace(/a$/, "") + (/,/.test(v) ? "-legacy" : "");
   return "name";
 }
+function mix(v) {
+  const m = /^color-mix\(\s*in\s+([\w-]+)(?:\s+(?:shorter|longer|increasing|decreasing)\s+hue)?\s*,(.*)\)$/i.exec(v.trim());
+  if (!m) return null;
+  const parts = [];
+  let depth = 0, cur = "";
+  for (const ch of m[2]) {
+    if (ch === "(") depth++;
+    if (ch === ")") depth--;
+    if (ch === "," && !depth) {
+      parts.push(cur);
+      cur = "";
+    } else cur += ch;
+  }
+  parts.push(cur);
+  if (parts.length !== 2) return null;
+  const one = (x) => {
+    const pm = x.trim().match(/^(.*?)(?:\s+([\d.]+)%)?$/s);
+    return { c: parseColor(pm[1].trim()), p: pm[2] != null ? Number(pm[2]) : null };
+  };
+  const a = one(parts[0]), b = one(parts[1]);
+  if (!a.c.hex || !b.c.hex) return null;
+  let pa = a.p, pb = b.p;
+  if (pa == null && pb == null) {
+    pa = 50;
+    pb = 50;
+  } else if (pa == null) pa = 100 - pb;
+  else if (pb == null) pb = 100 - pa;
+  const sum = pa + pb;
+  if (sum <= 0) return null;
+  const space = { srgb: "rgb", "srgb-linear": "lrgb", oklab: "oklab", oklch: "oklch", lab: "lab", lch: "lch", hsl: "hsl", hwb: "hwb", xyz: "xyz65", "xyz-d65": "xyz65", "display-p3": "p3" }[m[1].toLowerCase()] || "oklab";
+  const ca = parse_default("#" + a.c.hex), cb = parse_default("#" + b.c.hex);
+  ca.alpha = a.c.alpha ?? 1;
+  cb.alpha = b.c.alpha ?? 1;
+  const out = interpolate([ca, cb], space)(pb / sum);
+  return { hex: formatHex(out).slice(1), alpha: Math.round(Math.min(1, out.alpha ?? 1) * (sum < 100 ? sum / 100 : 1) * 1e3) / 1e3 };
+}
 var readOne = (raw) => {
+  if (/^color-mix\(/i.test(String(raw).trim())) return mix(raw);
   const r2 = parseColor(String(raw).trim());
   return r2.hex ? { hex: r2.hex, alpha: r2.alpha ?? 1 } : null;
 };
 function blankComments(s, line = true) {
   let out = s.replace(/\/\*[^]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
-  if (line) out = out.replace(/(^|[^:"'])\/\/[^\n]*/g, (m, p) => p + " ".repeat(m.length - p.length));
+  if (line) out = out.replace(/(^|[^:"'(\w\/])\/\/[^\n]*/g, (m, p) => p + " ".repeat(m.length - p.length));
   return out;
 }
-var DARK_SEL = /\.dark\b|\[data-(?:theme|mode|color-scheme)=["']?dark|\.theme-dark|\bdark-theme\b|\[theme=["']?dark/i;
+var DARK_SEL = /\.dark\b|\[data-(?:[\w-]*theme|mode|color-scheme)=["']?dark|\.theme-dark|\bdark-theme\b|\[theme=["']?dark/i;
 var DARK_MEDIA = /prefers-color-scheme\s*:\s*dark/i;
 var LIGHT_SEL = /\.light\b|\[data-(?:theme|mode|color-scheme)=["']?light|prefers-color-scheme\s*:\s*light/i;
+var MODE_ATTR = `\\[data-(?:[\\w-]*theme|mode|color-scheme)(?:=["']?(?:light|dark)["']?)?\\]`;
+var GLOBAL_PART = new RegExp(`^((:root|html|body|:host|\\*)?(${MODE_ATTR}|\\.(dark|light)(-theme|-mode)?|:not\\(\\.dark\\)|:not\\(\\.light\\)|:not\\(${MODE_ATTR}\\))*|:root|html|body|:host|\\*|\\.dark|\\.light)$`, "i");
+function isGlobalScope(prelude) {
+  const p = String(prelude || "").trim();
+  if (!p || /^@(media|supports|layer|theme|container|document|scope)\b/i.test(p)) return true;
+  if (p.startsWith("@")) return false;
+  return p.split(",").some((x) => GLOBAL_PART.test(x.trim().replace(/\s+/g, " ")) || /^(:root|html)\s+(body)?$/.test(x.trim()));
+}
 var PROPS = {
   color: "fg",
   "background-color": "bg",
@@ -2725,7 +2963,7 @@ var PROPS = {
   "column-rule-color": "border"
 };
 function readCss(text2) {
-  const src = blankComments(text2, /\$[\w-]+\s*:|@[\w-]+\s*:/.test(text2));
+  const src = blankComments(text2, /^\s*[$@][\w-]+\s*:/m.test(text2) && !/^\s*@(media|supports|import|font-face|layer|container|charset|keyframes)\b/m.test(text2.slice(0, 0)));
   const tokens = [], rules = [];
   const stack = [];
   let i = 0, start = 0;
@@ -2743,15 +2981,19 @@ function readCss(text2) {
       val = val.slice(0, -imp[0].length);
       ve -= imp[0].length;
     }
-    decls.push({ prop: m[1], value: val, span: [vs, ve], depth: stack.length, prelude: stack[stack.length - 1] || "", mode: mode(), scoped: stack.some((p) => LIGHT_SEL.test(p)), block: blockId });
+    decls.push({ prop: m[1], value: val, span: [vs, ve], depth: stack.length, prelude: stack[stack.length - 1] || "", global: stack.every(isGlobalScope), mode: mode(), scoped: stack.some((p) => LIGHT_SEL.test(p)), block: blockId });
   };
   let blockId = 0, blockSeq = 0;
   const blockStack = [];
   let quote = null, paren = 0;
   for (; i < src.length; i++) {
     const ch = src[i];
+    if (ch === "\\") {
+      i++;
+      continue;
+    }
     if (quote) {
-      if (ch === quote && src[i - 1] !== "\\") quote = null;
+      if (ch === quote) quote = null;
       continue;
     }
     if (ch === '"' || ch === "'") {
@@ -2784,16 +3026,57 @@ function readCss(text2) {
     }
   }
   flushDecl(start, src.length);
+  let firstTheme = null;
+  if (!decls.some((d) => d.global && d.prop.startsWith("--") && looksColor(d.value.trim()))) {
+    const d0 = decls.find((d) => d.prop.startsWith("--") && looksColor(d.value.trim()) && /theme|\[data-[\w-]*(theme|mode)|color-scheme/i.test(d.prelude));
+    const key = d0 && (d0.prelude.match(/\.[\w-]+|\[data-[\w-]+=["']?[\w-]+["']?\]/) || [])[0];
+    if (key) {
+      firstTheme = key;
+      for (const d of decls) if (d.prelude.includes(key)) {
+        d.global = true;
+        if (DARK_SEL.test(d.prelude) && !DARK_SEL.test(key)) d.mode = "dark";
+      }
+    }
+  }
   const vars = /* @__PURE__ */ new Map();
+  const themeScopes = /* @__PURE__ */ new Set();
+  const scoped = /* @__PURE__ */ new Map();
+  const keep = (t) => {
+    const k3 = `${t.name}|${t.mode}`;
+    const was = vars.get(k3);
+    if (was) was.dropped = true;
+    vars.set(k3, t);
+    tokens.push(t);
+  };
   for (const d of decls) {
+    if (d.prop.startsWith("--tw-")) continue;
     const isVar = d.prop.startsWith("--") || (d.prop.startsWith("$") || d.prop.startsWith("@") && !/^@(media|supports|import|font-face|keyframes|layer|theme|container|tailwind|apply|use|forward|include|mixin|function|return|if|else|each|for|while|charset|namespace|page)$/.test(d.prop)) && d.depth <= 1;
     if (!isVar) continue;
     const raw = d.value.trim();
-    const ref = raw.match(/^var\(\s*(--[\w-]+)\s*(?:,[^)]*)?\)$/) || raw.match(/^([$@][\w-]+)$/);
+    if (d.prop.startsWith("--") && !d.global) {
+      scoped.set(`${d.block}|${d.prop}`, raw);
+      if (/theme|\[data-/i.test(d.prelude) && looksColor(raw)) themeScopes.add(d.prelude.replace(/\s+/g, " ").slice(0, 60));
+      continue;
+    }
+    const ref = raw.match(/^var\(\s*(--[\w-]+)\s*(?:,\s*([^)]*))?\)$/) || raw.match(/^([$@][\w-]+)$/);
     const hslRef = raw.match(/^(hsla?|rgba?|oklch)\(\s*var\(\s*(--[\w-]+)\s*\)\s*(?:\/\s*([\d.]+%?))?\s*\)$/i);
+    const ld = splitLightDark(raw);
+    if (ld) {
+      for (const [m, part] of [["light", ld[0]], ["dark", ld[1]]]) {
+        if (!looksColor(part.text)) continue;
+        const c2 = readOne(part.text);
+        if (!c2) continue;
+        const at = d.span[0] + part.at;
+        const tk = { name: d.prop, mode: m, raw: part.text, span: [at, at + part.text.length], format: formatOf(part.text), ...c2 };
+        keep(tk);
+      }
+      continue;
+    }
     const t = { name: d.prop, mode: d.mode, raw, span: d.span, format: formatOf(raw) };
-    if (ref) t.alias = ref[1];
-    else if (hslRef) {
+    if (ref) {
+      t.alias = ref[1];
+      if (ref[2] && looksColor(ref[2])) t.fallback = ref[2].trim();
+    } else if (hslRef) {
       t.alias = hslRef[2];
       t.wrap = hslRef[1].toLowerCase();
       t.wrapAlpha = hslRef[3];
@@ -2803,9 +3086,9 @@ function readCss(text2) {
       if (!c2) continue;
       Object.assign(t, c2);
     } else continue;
-    vars.set(`${t.name}|${t.mode}`, t);
-    tokens.push(t);
+    keep(t);
   }
+  for (let i2 = tokens.length - 1; i2 >= 0; i2--) if (tokens[i2].dropped) tokens.splice(i2, 1);
   const lookup = (name, m) => vars.get(`${name}|${m}`) || vars.get(`${name}|light`);
   const resolve = (t, seen = /* @__PURE__ */ new Set()) => {
     if (t.hex || !t.alias) return t;
@@ -2821,7 +3104,24 @@ function readCss(text2) {
     return t;
   };
   tokens.forEach((t) => resolve(t));
-  const valueOf = (raw, m, span) => {
+  for (const t of tokens) if (!t.hex && t.fallback) {
+    const c2 = readOne(t.fallback);
+    if (c2) Object.assign(t, c2);
+  }
+  if (tokens.some((t) => t.mode === "dark")) {
+    for (const t of tokens.filter((x) => x.mode === "light" && x.alias && !vars.has(`${x.name}|dark`))) {
+      const to = vars.get(`${t.alias}|dark`);
+      if (!to) continue;
+      resolve(to);
+      const c2 = t.wrap && to.raw ? readOne(`${t.wrap}(${to.raw}${t.wrapAlpha ? ` / ${t.wrapAlpha}` : ""})`) : to.hex ? { hex: to.hex, alpha: to.alpha } : null;
+      if (c2) {
+        const d = { ...t, ...c2, mode: "dark", span: null, via: to.name };
+        vars.set(`${t.name}|dark`, d);
+        tokens.push(d);
+      }
+    }
+  }
+  const valueOf = (raw, m, span, block, depth = 0) => {
     const v = raw.trim();
     if (/gradient\(|url\(/i.test(v)) return { image: true };
     const fn4 = v.match(/^(hsla?|rgba?|oklch)\(\s*var\(\s*(--[\w-]+)\s*\)\s*(?:\/\s*([\d.]+%?))?\s*\)$/i);
@@ -2832,6 +3132,11 @@ function readCss(text2) {
     }
     const vr = v.match(/var\(\s*(--[\w-]+)/) || v.match(/^([$@][\w-]+)$/);
     if (vr) {
+      const sv = block != null && depth < 6 && scoped.get(`${block}|${vr[1]}`);
+      if (sv) {
+        const inner = valueOf(sv, m, null, block, depth + 1);
+        return inner ? { ...inner, token: void 0, span: null, raw: void 0 } : null;
+      }
       const t = lookup(vr[1], m);
       return t?.hex ? { hex: t.hex, alpha: t.alpha, token: t.name } : null;
     }
@@ -2863,11 +3168,54 @@ function readCss(text2) {
       if (w) r2.fontWeight = w;
       continue;
     }
-    const v = valueOf(d.value, d.mode, d.span);
-    if (v && (v.hex || v.image)) r2[kind] = v;
+    const ldv = splitLightDark(d.value.trim());
+    if (ldv) {
+      const off = d.value.indexOf(d.value.trim());
+      const lv = valueOf(ldv[0].text, "light", [d.span[0] + off + ldv[0].at, 0], d.block), dv = valueOf(ldv[1].text, "dark", [d.span[0] + off + ldv[1].at, 0], d.block);
+      if (lv) {
+        r2[kind] = lv;
+        r2.scoped = true;
+      }
+      let twin = byBlock.get(`${d.block}|dark`);
+      if (!twin) {
+        twin = { selector: r2.selector, mode: "dark", scoped: true, twinOf: r2 };
+        byBlock.set(`${d.block}|dark`, twin);
+      }
+      if (dv) twin[kind] = dv;
+      continue;
+    }
+    const v = valueOf(d.value, d.mode, d.span, d.block);
+    if (v && (v.hex || v.image)) {
+      r2[kind] = v;
+      const tw = byBlock.get(`${d.block}|dark`);
+      if (tw && !tw[kind]) tw[kind] = v;
+    }
   }
-  for (const r2 of byBlock.values()) if (r2.fg || r2.bg || r2.border || r2.outline) rules.push(r2);
-  return { tokens: tokens.filter((t) => t.hex), rules };
+  for (const r2 of byBlock.values()) {
+    if (r2.twinOf) {
+      for (const k3 of ["fg", "bg", "border", "outline", "fontSize", "fontWeight"]) if (r2[k3] === void 0 && r2.twinOf[k3] !== void 0) r2[k3] = r2.twinOf[k3];
+    }
+    if (r2.fg || r2.bg || r2.border || r2.outline) rules.push(r2);
+  }
+  const notes = firstTheme ? [`Only the first theme, ${firstTheme}, is checked${themeScopes.size ? `; ${themeScopes.size} other theme ${themeScopes.size === 1 ? "scope is" : "scopes are"} not` : ""}. Paste one theme at a time to check another.`] : themeScopes.size ? [`${themeScopes.size} other theme ${themeScopes.size === 1 ? "scope was" : "scopes were"} not checked (${[...themeScopes].slice(0, 3).join(", ")}${themeScopes.size > 3 ? ", \u2026" : ""}): only the default light and dark colors are. Paste one theme at a time to check it.`] : [];
+  return { tokens: tokens.filter((t) => t.hex), rules, notes, vars: decls.filter((d) => d.prop.startsWith("--")).length };
+}
+function splitLightDark(v) {
+  const m = /^light-dark\(/i.exec(v);
+  if (!m || !v.endsWith(")")) return null;
+  const inner = v.slice(m[0].length, -1);
+  let depth = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const c2 = inner[i];
+    if (c2 === "(") depth++;
+    else if (c2 === ")") depth--;
+    else if (c2 === "," && !depth) {
+      const a = inner.slice(0, i), b = inner.slice(i + 1);
+      const at0 = m[0].length + (a.length - a.trimStart().length), at1 = m[0].length + i + 1 + (b.length - b.trimStart().length);
+      return [{ text: a.trim(), at: at0 }, { text: b.trim(), at: at1 }];
+    }
+  }
+  return null;
 }
 function toPx(v) {
   const m = String(v).trim().match(/^([\d.]+)(px|rem|em|pt)$/);
@@ -2982,7 +3330,7 @@ function readJson(text2) {
     return { kind: "figma", tokens };
   }
   const leaves = jsonLeaves(text2);
-  const dtcg = leaves.some((l) => l.path[l.path.length - 1] === "$value");
+  const dtcg = leaves.some((l) => l.path[l.path.length - 1] === "$value") || /"\$value"\s*:\s*\{/.test(text2);
   const sd = !dtcg && leaves.some((l) => l.path[l.path.length - 1] === "value");
   const byName = /* @__PURE__ */ new Map();
   for (const l of leaves) {
@@ -3016,9 +3364,11 @@ function readJson(text2) {
       if (!o || typeof o !== "object") return;
       if (o.$value && typeof o.$value === "object" && (o.$value.hex || o.$value.components)) {
         const v = o.$value;
-        const c2 = v.hex ? readOne(v.hex) : readOne(`color(${v.colorSpace || "srgb"} ${v.components.join(" ")})`);
+        const sp = String(v.colorSpace || "srgb").toLowerCase(), k3 = (v.components || []).map((x) => x === "none" ? 0 : Number(x));
+        const css = ["oklch", "oklab", "lab", "lch", "hwb"].includes(sp) ? `${sp}(${k3.join(" ")})` : sp === "hsl" ? `hsl(${k3[0]} ${k3[1]}% ${k3[2]}%)` : `color(${sp} ${k3.join(" ")})`;
+        const c2 = v.hex ? readOne(v.hex) : readOne(css);
         const modeIdx = path5.findIndex((p) => MODE_WORD.test(p));
-        if (c2) tokens.push({ name: path5.filter((_, k3) => k3 !== modeIdx).join("."), ...c2, alpha: v.alpha ?? 1, mode: modeIdx >= 0 ? modeOfWord(path5[modeIdx]) : "light", raw: null, span: null, format: "hex" });
+        if (c2) tokens.push({ name: path5.filter((_, k4) => k4 !== modeIdx).join("."), ...c2, alpha: v.alpha ?? 1, mode: modeIdx >= 0 ? modeOfWord(path5[modeIdx]) : "light", raw: null, span: null, format: "hex" });
         return;
       }
       for (const [k3, x] of Object.entries(o)) if (!k3.startsWith("$")) walk2(x, [...path5, k3]);
@@ -3110,11 +3460,12 @@ function readInput(text2, max = 2e5) {
     const c2 = readCss(s);
     out = { kind: /@theme\b/.test(s) ? "tailwind4" : /\$[\w-]+\s*:/.test(s) ? "scss" : /@[\w-]+\s*:/.test(s) && !/--[\w-]+\s*:/.test(s) ? "less" : "css", ...c2 };
   }
-  if (!out || !out.tokens.length && !(out.rules || []).length) out = { kind: "list", ...readList(s), rules: [] };
-  const warnings = [];
+  if (!out || !out.tokens.length && !(out.rules || []).length && !out.vars) out = { kind: "list", ...readList(s), rules: [] };
+  const warnings = [...out.notes || []];
   if (out.tokens.length > MAX_TOKENS) {
-    warnings.push(`Only the first ${MAX_TOKENS} colors are checked.`);
-    out.tokens = out.tokens.slice(0, MAX_TOKENS);
+    const step = (t2) => /(^|[-_.])(background|bg|foreground|fg|text|surface|border|primary|accent|muted|card|ring|input|link|destructive|error|success|warning)([-_.]|$)/i.test(t2.name) ? 0 : /[-_.](50|[1-9]00|950|[1-9]|1[0-2])$/.test(t2.name) ? 2 : 1;
+    out.tokens = out.tokens.map((t2, i) => [t2, i]).sort((a, b) => step(a[0]) - step(b[0]) || a[1] - b[1]).slice(0, MAX_TOKENS).sort((a, b) => a[1] - b[1]).map((x) => x[0]);
+    warnings.push(`Only ${MAX_TOKENS} of the colors are checked: the named ones first, then scale steps.`);
   }
   return { ...out, warnings };
 }
@@ -3134,8 +3485,8 @@ var fromOklch = (l, c2, h) => formatHex(toSrgb2({ mode: "oklch", l: Math.max(0, 
 var dE = (a, b) => r12(okDist2(col2(a), col2(b)) * 100, 1);
 var VERSION = "1.0.0";
 var MAX_PAIRS = 400;
-var BG_WORDS = ["background", "bg", "surface", "canvas", "card", "popover", "paper", "page", "backdrop", "layer", "container", "sheet", "panel", "well", "base", "body", "sidebar", "header", "footer", "nav", "modal", "dialog", "menu", "tooltip", "overlay", "fill"];
-var FG_WORDS = ["foreground", "fg", "text", "ink", "on", "label", "heading", "title", "copy", "content", "caption", "placeholder", "icon"];
+var BG_WORDS = ["background", "bg", "surface", "canvas", "card", "popover", "paper", "page", "backdrop", "layer", "container", "sheet", "panel", "well", "sidebar", "header", "footer", "nav", "modal", "dialog", "menu", "tooltip", "overlay", "fill"];
+var FG_WORDS = ["foreground", "fg", "text", "ink", "on", "label", "heading", "title", "copy", "content", "caption", "placeholder", "icon", "font", "type"];
 var BORDER_WORDS = ["border", "outline", "ring", "divider", "stroke", "separator", "input", "focus", "hairline", "rule"];
 var ACCENT_WORDS = ["primary", "secondary", "tertiary", "accent", "brand", "link", "info", "success", "warning", "warn", "danger", "error", "destructive", "positive", "negative", "critical", "caution", "notice", "highlight", "attention", "neutral", "muted", "subtle"];
 var STATUS = ["info", "success", "warning", "warn", "danger", "error", "destructive", "positive", "negative", "critical", "caution", "notice"];
@@ -3144,9 +3495,11 @@ var SCALE_STEP = /^(50|[1-9]00|950|[1-9]|1[0-2]|[1-9]0|a?[1-9]00)$/i;
 function words(name) {
   return String(name).replace(/^(--|\$|@)/, "").replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase().split(/[-_./\s]+/).filter((w) => w && !["md", "sys", "ref", "color", "colors", "colour", "theme", "tw", "semantic", "global", "default", "token", "tokens", "value", "chakra", "mantine", "bs", "ui", "sl"].includes(w));
 }
+var PRIMITIVE = /(^|[.\-_/])(base|primitives?|palette|core|ref|ramps?|scales?|raw|swatch(es)?)[.\-_/]./i;
 function roleOf(name) {
   const w = words(name);
   if (!w.length) return { role: null };
+  if (PRIMITIVE.test(String(name).replace(/^(--|\$|@)/, "")) && !w.some((x) => ["on", "foreground", "fg", "text", "background", "bg", "surface", "border"].includes(x))) return { role: "scale", primitive: true };
   const has = (list) => w.some((x) => list.includes(x));
   const last = w[w.length - 1];
   if (/^(chart|series|data|categorical|viz|graph|plot)$/.test(w[0]) || w.includes("chart")) return { role: "chart" };
@@ -3155,8 +3508,8 @@ function roleOf(name) {
   if (w.length > 1 && ["foreground", "fg", "contrast", "text", "content", "ink", "icon"].includes(last) && !FG_WORDS.includes(w[0])) {
     return { role: "text", on: w.slice(0, -1).join("-"), why: `named \u2026-${last}` };
   }
-  if (FG_WORDS.includes(w[0]) && w.length > 1 && !has(BG_WORDS)) return { role: "text", sub: w.slice(1).join("-") };
   if (has(BORDER_WORDS)) return { role: has(["input", "ring", "focus"]) ? "control" : "border" };
+  if (FG_WORDS.includes(w[0]) && w.length > 1 && !has(BG_WORDS)) return { role: "text", sub: w.slice(1).join("-") };
   if (has(FG_WORDS) && !has(BG_WORDS)) return { role: "text" };
   if (has(BG_WORDS)) return { role: "bg", accent: has(ACCENT_WORDS) };
   if (SCALE_STEP.test(last) && w.length > 1) return { role: "scale", stem: w.slice(0, -1).join("-") };
@@ -3217,29 +3570,69 @@ function plan(read, opts = {}) {
       Object.assign(t, { role: r2 === "ignore" ? "ignore" : r2, why: "set by you", on: void 0, sub: void 0 });
     }
   }
-  for (const t of tokens) if (t.role === "accent" && t.muted && t.why !== "set by you") {
-    t.role = L(t.hex) > 0.85 ? "bg" : "text";
-    t.why = "muted: by lightness";
+  const mutedRole = /* @__PURE__ */ new Map();
+  for (const t of [...tokens].sort((a, b) => (a.mode === "light" ? -1 : 1) - (b.mode === "light" ? -1 : 1))) {
+    if (t.role !== "accent" || !t.muted || t.why === "set by you") continue;
+    if (!mutedRole.has(t.name)) mutedRole.set(t.name, (t.mode === "dark" ? L(t.hex) < 0.3 : L(t.hex) > 0.85) ? "bg" : "text");
+    t.role = mutedRole.get(t.name);
+    t.why = t.role === "bg" ? "muted: a surface" : "muted: text";
+  }
+  for (const t of tokens) {
+    const m = String(t.name).match(/^(.*?)[-_]colou?r$/);
+    if (!m || t.why === "set by you" || t.role === "text") continue;
+    const bgTok = tokens.find((x) => x.mode === t.mode && (x.name === `${m[1]}-bg` || x.name === `${m[1]}-bg-color` || x.name === `${m[1]}-background`));
+    if (bgTok) {
+      t.role = "text";
+      t.on = words(bgTok.name).join("-");
+      t.why = `beside ${bgTok.name}`;
+    }
+  }
+  const key = (t) => `${words(t.name).join("-")}|${t.mode}`;
+  const byKey = /* @__PURE__ */ new Map();
+  for (const t of tokens) if (!t.via) byKey.set(key(t), t);
+  for (const t of tokens) if (t.via && byKey.has(key(t)) && byKey.get(key(t)) !== t && byKey.get(key(t)).hex === t.hex) {
+    t.role = "ignore";
+    t.why = `the same as ${byKey.get(key(t)).name}`;
   }
   const modes2 = [.../* @__PURE__ */ new Set([...tokens.map((t) => t.mode), ...(read.rules || []).map((r2) => r2.mode)])].sort((a, b) => a === "light" ? -1 : b === "light" ? 1 : 0);
   const pairs = [];
-  const seen = /* @__PURE__ */ new Set();
+  const seen = /* @__PURE__ */ new Map();
   const add = (fg, bg, kind, why, extra = {}) => {
     if (!fg || !bg || fg === bg || fg.role === "ignore" || bg.role === "ignore") return;
-    const key = `${fg.id}>${bg.id}`;
-    if (seen.has(key)) {
-      const p = pairs.find((x) => x.key === key);
-      if (p && rank(kind) > rank(p.kind)) Object.assign(p, { kind, why });
+    if (fg.alpha === 0 || bg.alpha === 0 || fg.via === bg.name || bg.via === fg.name) return;
+    const asFg = fg, asBg = bg;
+    fg = canon(fg);
+    bg = canon(bg);
+    if (fg === bg) return;
+    if (asFg !== fg) extra = { ...extra, asFg: asFg.name };
+    if (asBg !== bg) extra = { ...extra, asBg: asBg.name };
+    if (fg.hex === bg.hex && (fg.alpha ?? 1) === (bg.alpha ?? 1) && why !== "declared by you") return;
+    const key2 = `${fg.id}>${bg.id}`;
+    if (seen.has(key2)) {
+      const p2 = seen.get(key2);
+      if (p2 && rank(kind) > rank(p2.kind)) Object.assign(p2, { kind, why });
       return;
     }
-    seen.add(key);
-    pairs.push({ key, fg, bg, kind, why, mode: fg.mode, ...extra });
+    const p = { key: key2, fg, bg, kind, why, mode: fg.mode, ...extra };
+    seen.set(key2, p);
+    pairs.push(p);
   };
   const rank = (k3) => ({ text: 3, large: 2, ui: 1, decor: 0 })[k3] ?? 0;
+  const pairsLater = [];
+  const byName = new Map(tokens.map((t) => [`${t.name}|${t.mode}`, t]));
+  const canon = (t) => {
+    let x = t, n = 0;
+    while (x.via && n++ < 8) {
+      const y = byName.get(`${x.via}|${x.mode}`) || byName.get(`${x.via}|light`);
+      if (!y || y === x || y.role === "ignore") break;
+      x = y;
+    }
+    return x;
+  };
   for (const mode of modes2) {
     const all = tokens.filter((t) => t.mode === mode && t.role !== "ignore");
     const named2 = new Map(all.map((t) => [words(t.name).join("-"), t]));
-    const unnamed = all.every((t) => t.unnamed || t.role == null);
+    const unnamed = all.every((t) => t.unnamed || t.role == null) || all.length <= 12 && all.every((t) => t.role === "scale" || t.role == null);
     if (unnamed && !read.rules?.length) {
       const by = [...all].sort((a, b) => L(b.hex) - L(a.hex));
       const light = by[0], dark = by[by.length - 1];
@@ -3250,29 +3643,52 @@ function plan(read, opts = {}) {
       }
     }
     const bgs = all.filter((t) => t.role === "bg" && !t.accent);
-    const main2 = pickMain(bgs.length ? bgs : all, mode);
+    const modeRules = (read.rules || []).filter((x) => x.mode === mode || mode === "dark" && x.mode === "light" && !x.scoped);
+    const pageRule = [...modeRules].reverse().find((x) => PAGE_SEL.test(x.selector) && x.bg && !x.bg.image && x.bg.alpha !== 0);
+    let main2 = bgs.length ? pickMain(bgs, mode) : null;
+    if (!main2 && pageRule) main2 = pageRule.bg.token ? all.find((t) => t.name === pageRule.bg.token) : synth(tokens, pageRule.bg, mode, pageRule.selector);
+    if (!main2) main2 = pickMain(all, mode);
+    if (!main2 && mode === "light" && modeRules.some((x) => x.fg)) {
+      main2 = synth(tokens, { hex: "ffffff", alpha: 1 }, mode, "the browser default");
+      main2.name = "page background (white, the browser default)";
+      main2.span = null;
+    }
+    if (pageRule && main2 && !modeRules.some((x) => PAGE_SEL.test(x.selector) && x.fg)) {
+      const dflt = synth(tokens, { hex: mode === "dark" ? "ffffff" : "000000", alpha: 1 }, mode, "the browser default");
+      dflt.name = mode === "dark" ? "default text (white)" : "default text (black)";
+      dflt.span = null;
+      pairsLater.push([dflt, main2]);
+    }
     const texts = all.filter((t) => t.role === "text");
-    for (const r2 of (read.rules || []).filter((x) => (x.mode === mode || mode === "dark" && x.mode === "light" && !x.scoped) && !(UTILITY.test(x.selector) && !(x.fg && x.bg)) && !(mode === "dark" && x.mode === "light" && ![x.fg, x.bg, x.border, x.outline].some((v) => v?.token)))) {
+    for (const [a, b] of pairsLater.splice(0)) add(a, b, "text", "the browser's default text on the page background");
+    for (const r2 of modeRules.filter((x) => !(UTILITY.test(x.selector) && !(x.fg && x.bg)) && !(mode === "dark" && x.mode === "light" && ![x.fg, x.bg, x.border, x.outline].some((v) => v?.token)))) {
       const tok = (v) => v && !v.image ? all.find((t) => t.name === v.token) || synth(tokens, v, mode, r2.selector) : null;
-      const bg = r2.bg && !r2.bg.image ? tok(r2.bg) : main2;
+      if (!r2.bg && r2.fg && (ELSEWHERE.test(r2.selector) || TEXT_UTILITY.test(r2.selector))) continue;
+      const base = !r2.bg ? modeRules.find((x) => x !== r2 && x.bg && !x.bg.image && baseSel(x.selector) === baseSel(r2.selector)) : null;
+      const bg = r2.bg && !r2.bg.image ? tok(r2.bg) : base ? tok(base.bg) : main2;
       const large = r2.fontSize ? isLarge(r2.fontSize, r2.fontWeight) : false;
-      if (r2.fg) add(tok(r2.fg), bg, large ? "large" : "text", `${r2.selector} sets ${r2.bg ? "color and background" : "color"}`, { selector: r2.selector, image: r2.bg?.image });
+      if (r2.fg) add(tok(r2.fg), bg, large ? "large" : "text", `${r2.selector} sets ${r2.bg ? "color and background" : "color"}`, { selector: r2.selector, image: r2.bg?.image, guess: !r2.bg && !base });
       for (const k3 of ["border", "outline"]) if (r2[k3] && bg) add(tok(r2[k3]), bg, /input|select|textarea|button|focus|checkbox|radio/i.test(r2.selector) || k3 === "outline" ? "ui" : "decor", `${r2.selector} sets ${k3}`, { selector: r2.selector });
     }
     for (const t of texts) {
       if (t.on) {
         const base = named2.get(t.on) || named2.get(t.on.replace(/-?(default|base)$/, "")) || ["bg", "background", "surface", "fill", "container"].map((x) => named2.get(`${t.on}-${x}`)).find(Boolean) || [...named2.entries()].find(([k3, v]) => v !== t && v.role !== "text" && (k3.endsWith(t.on) || t.on.endsWith(k3)))?.[1];
         if (base && base !== t) add(t, base, "text", `${t.name} is named for ${base.name}`);
-        if (main2 && base !== main2 && (!base || /muted|subtle|secondary|surface|card|popover|background/.test(t.on))) add(t, main2, "text", `${t.name} on the page background`);
+        if (main2 && base !== main2 && (!base || /muted|subtle|secondary|surface|card|popover|background/.test(t.on))) add(t, main2, "text", `${t.name} on the page background`, { guess: !base });
       } else if (main2) {
         add(t, main2, "text", "text on the page background");
-        for (const b of bgs) if (b !== main2 && !hasOwnText(b, texts)) add(t, b, "text", `text on ${b.name}`);
+        if (bgs.length <= 6) {
+          for (const b of bgs) if (b !== main2 && !hasOwnText(b, texts)) add(t, b, "text", `text on ${b.name}`);
+        }
       }
     }
     for (const t of all.filter((x) => x.role === "accent")) {
       if (!main2 || t === main2) continue;
-      const own = texts.find((x) => x.on && named2.get(x.on) === t);
-      if (own) continue;
+      const own = texts.find((x) => x.on && (named2.get(x.on) === t || words(t.name).join("-") === x.on));
+      if (own) {
+        if (t.status) add(t, main2, "text", "status colours are also text (error and warning messages)");
+        continue;
+      }
       add(t, main2, words(t.name).includes("link") || t.status ? "text" : "ui", words(t.name).includes("link") ? "links are text" : t.status ? "status text and icons" : "buttons, icons and accents on the background");
       if (unnamed) for (const x of texts) add(x, t, "text", "text on an accent", { optional: true });
     }
@@ -3298,6 +3714,10 @@ function plan(read, opts = {}) {
   }
   return { tokens, pairs: pairs.slice(0, MAX_PAIRS), groups: groups2, modes: modes2, tooMany: pairs.length > MAX_PAIRS };
 }
+var TEXT_UTILITY = /(^|[\s.:(*,>])\.?[\w\\:\[\]\.*-]*text-[\w\\/.!\[\]#-]+/;
+var baseSel = (sel) => String(sel).split(",")[0].trim().replace(/::?[\w-]+(\([^)]*\))?/g, "").trim();
+var PAGE_SEL = /^(html|body|:root)(\s*,\s*(html|body|:root))*$/i;
+var ELSEWHERE = /invers|revers|on-dark|on-light|knockout|\.dark\b|dark-mode|-dark\b|::selection|disabled/i;
 function pickMain(list, mode) {
   const exact = list.find((t) => /^(background|bg|page|canvas|body|surface|base|background-default|bg-default|surface-default)$/.test(words(t.name).join("-")));
   if (exact) return exact;
@@ -3312,7 +3732,7 @@ function findTok(all, ref) {
   return all.find((t) => t.name === ref) || all.find((t) => t.name.toLowerCase() === String(ref).toLowerCase()) || all.find((t) => t.hex === s);
 }
 function synth(tokens, v, mode, selector) {
-  let t = tokens.find((x) => !x.name.startsWith("--") && x.hex === v.hex && x.mode === mode && x.literal);
+  let t = tokens.find((x) => x.literal && x.hex === v.hex && (x.alpha ?? 1) === (v.alpha ?? 1) && x.mode === mode);
   if (!t) {
     t = { name: `#${v.hex}`, hex: v.hex, alpha: v.alpha, mode, id: tokens.length, role: "literal", literal: true, raw: v.raw || null, span: v.span || null, format: v.format, where: selector };
     tokens.push(t);
@@ -3325,8 +3745,9 @@ function judge(p, target = "AA", apca2) {
   const ratio2 = contrast2(fgHex, bgHex);
   const need = needOf(p.kind, target);
   const out = {
-    fg: { name: p.fg.name, hex: p.fg.hex, alpha: p.fg.alpha ?? 1, shown: fgHex },
-    bg: { name: p.bg.name, hex: p.bg.hex, alpha: p.bg.alpha ?? 1, shown: bgHex },
+    // shown under the name the design uses (an alias), fixed at its source
+    fg: { name: p.asFg || p.fg.name, hex: p.fg.hex, alpha: p.fg.alpha ?? 1, shown: fgHex, ...p.asFg ? { source: p.fg.name } : {} },
+    bg: { name: p.asBg || p.bg.name, hex: p.bg.hex, alpha: p.bg.alpha ?? 1, shown: bgHex, ...p.asBg ? { source: p.bg.name } : {} },
     mode: p.mode,
     kind: p.kind,
     why: p.why,
@@ -3337,7 +3758,16 @@ function judge(p, target = "AA", apca2) {
     margin: r12(ratio2 - need, 2)
   };
   if (p.image) out.image = true;
-  if (p.optional) out.optional = true;
+  if (p.optional) {
+    out.optional = true;
+    out.pass = null;
+  }
+  if (p.guess && ratio2 < 1.2) {
+    out.optional = true;
+    out.pass = null;
+    out.unknownBg = true;
+    out.why = `${p.why}; nearly the page color, so it sits on a background the stylesheets do not show`;
+  }
   if (apca2) out.lc = apca2(fgHex, bgHex);
   out.glare = glareRatio(fgHex, bgHex);
   let worst = null;
@@ -3422,7 +3852,8 @@ function feel(hexes) {
   const ls = o.map((x) => x.l).sort((a, b) => a - b);
   const lightRange = r12(ls[ls.length - 1] - ls[0], 2);
   const steps = ls.filter((l, i) => !i || l - ls[i - 1] >= 0.08).length;
-  if (lightRange < 0.5 && o.length >= 2) notes.push({ kind: "flat", text: `The lightest and darkest colours are only ${Math.round(lightRange * 100)} points apart in lightness, so no pair will carry body text. Add a near-black or near-white.` });
+  const best = o.length >= 2 ? contrast2(o.reduce((a, b) => a.l > b.l ? a : b).hex, o.reduce((a, b) => a.l < b.l ? a : b).hex) : 21;
+  if (lightRange < 0.5 && o.length >= 2 && best < 4.5) notes.push({ kind: "flat", text: `The lightest and darkest colours are only ${Math.round(lightRange * 100)} points apart in lightness, so no pair will carry body text. Add a near-black or near-white.` });
   else if (steps < Math.min(3, o.length)) notes.push({ kind: "steps", text: "Few distinct lightness steps: headings, text and surfaces will be hard to tell apart. Spread the lightness more." });
   const vib = [];
   for (let i = 0; i < chromatic.length; i++) for (let j = i + 1; j < chromatic.length; j++) {
@@ -3453,15 +3884,27 @@ function feel(hexes) {
 var WEIGHT = { text: 1, literal: 1.1, control: 1.2, border: 1.2, chart: 1.6, bg: 1.8, scale: 1.5, accent: 2.2 };
 function nearestL(hex3, test) {
   const o = toOklch(col2(hex3)), c2 = o.c || 0, h = o.h || 0;
-  for (let d = 2e-3; d <= 1; d += 2e-3) {
-    for (const s of [1, -1]) {
-      const l = o.l + s * d;
-      if (l < 0 || l > 1) continue;
-      const x = fromOklch(l, c2, h);
-      if (test(x)) return x;
+  const at = (l) => fromOklch(l, c2, h);
+  let best = null;
+  for (const s of [1, -1]) {
+    let hit = null;
+    for (let d2 = 0.01; d2 <= 1.001; d2 += 0.01) {
+      const l = o.l + s * d2;
+      if (l < -1e-3 || l > 1.001) break;
+      if (test(at(Math.min(1, Math.max(0, l))))) {
+        hit = d2;
+        break;
+      }
     }
+    if (hit == null) continue;
+    let d = hit;
+    for (let f2 = hit - 1e-3; f2 > hit - 0.01 && f2 > 0; f2 -= 1e-3) {
+      if (test(at(Math.min(1, Math.max(0, o.l + s * f2))))) d = f2;
+      else break;
+    }
+    if (!best || d < best.d) best = { d, x: at(Math.min(1, Math.max(0, o.l + s * d))) };
   }
-  return null;
+  return best && test(best.x) ? best.x : null;
 }
 function solve(planned, target = "AA", lock = []) {
   const value = new Map(planned.tokens.map((t) => [t.id, t.hex]));
@@ -3478,16 +3921,18 @@ function solve(planned, target = "AA", lock = []) {
     if (!failing2.length) break;
     let best = null;
     const cands = /* @__PURE__ */ new Map();
-    for (const p of failing2) for (const t of [p.fg, p.bg]) {
+    for (const p of failing2.slice(0, 40)) for (const t of [p.fg, p.bg]) {
       const tk = byId.get(t.id) || t;
       if (!tk.inherited && !locked.has(tk.name) && !locked.has(tk.hex) && !locked.has("#" + tk.hex)) cands.set(tk.id, tk);
     }
     for (const t of cands.values()) {
       const mine = pairs.filter((p) => p.fg.id === t.id || p.bg.id === t.id);
-      const to = nearestL(value.get(t.id), (x) => {
-        const v = new Map(value);
-        v.set(t.id, x);
-        return mine.every((p) => ok(p, v));
+      const prev = value.get(t.id);
+      const to = nearestL(prev, (x) => {
+        value.set(t.id, x);
+        const r2 = mine.every((p) => ok(p));
+        value.set(t.id, prev);
+        return r2;
       });
       if (!to) continue;
       const fixes = failing2.filter((p) => p.fg.id === t.id || p.bg.id === t.id).length;
@@ -3506,7 +3951,7 @@ function solve(planned, target = "AA", lock = []) {
     kind: p.kind,
     // what one side alone would need, ignoring the other pairs
     suggest: { fg: nearestL(value.get(p.fg.id), (x) => ok(p, new Map(value).set(p.fg.id, x))), bg: nearestL(value.get(p.bg.id), (x) => ok(p, new Map(value).set(p.bg.id, x))) }
-  }));
+  })).slice(0, 60);
   return { target, changes, remaining, values: value };
 }
 function writeLike(hex3, raw, format, alpha = 1) {
@@ -3598,7 +4043,7 @@ function summarize(r2) {
   const fail2 = judged.filter((p) => !p.pass);
   const pass = judged.length - fail2.length;
   const lines = [];
-  if (!r2.input.colors) return { pass: 0, fail: 0, total: 0, issues: 0, text: "No colors found. Paste hex codes, CSS, Tailwind config or design tokens.", lines: [] };
+  if (!r2.input.colors) return { pass: 0, fail: 0, total: 0, issues: 0, text: r2.input.rules ? `${r2.input.rules} CSS rules read, but none sets a color that can be paired (colors set by scripts or images are not seen).` : "No colors found. Paste hex codes, CSS, Tailwind config or design tokens.", lines: [] };
   if (!judged.length) lines.push(`${r2.input.colors} colors read, but no pairs to judge: tell the checker which colors are text and which are backgrounds.`);
   else lines.push(`${judged.length} ${judged.length === 1 ? "pair" : "pairs"} checked against ${r2.standard}: ${pass} pass, ${fail2.length} fail.`);
   if (fail2.length) {
@@ -3608,7 +4053,7 @@ function summarize(r2) {
   }
   if (r2.fix.changes.length) {
     const ch = r2.fix.changes;
-    lines.push(`Changing ${ch.length} ${ch.length === 1 ? "color" : "colors"} fixes ${r2.fix.remaining.length ? "most of it" : "every failing pair"}: ${ch.slice(0, 4).map((c2) => `${c2.name === "#" + c2.from ? "" : c2.name + " "}#${c2.from} \u2192 #${c2.to} (\u0394E ${c2.deltaE})`).join(", ")}${ch.length > 4 ? ", \u2026" : ""}.`);
+    lines.push(`Changing ${ch.length} ${ch.length === 1 ? "color" : "colors"} fixes ${r2.fix.remaining.length ? "most of it" : "every failing pair"}: ${ch.slice(0, 4).map((c2) => `${c2.name === "#" + c2.from ? "" : c2.name + " "}${r2.input.modes.length > 1 ? `(${c2.mode}) ` : ""}#${c2.from} \u2192 #${c2.to} (\u0394E ${c2.deltaE})`).join(", ")}${ch.length > 4 ? ", \u2026" : ""}.`);
   }
   if (r2.fix.remaining.length) lines.push(`${r2.fix.remaining.length} ${r2.fix.remaining.length === 1 ? "pair needs" : "pairs need"} both colors to move; see the suggestions.`);
   const cvd = r2.pairs.filter((p) => p.pass && p.vision && p.vision.ratio < p.need);
@@ -3623,7 +4068,7 @@ function summarize(r2) {
 // cli/src/files.js
 import fs from "node:fs";
 import path from "node:path";
-var EXT = /\.(css|scss|sass|less|pcss|postcss|json|js|cjs|mjs|ts)$/i;
+var EXT = /\.(css|scss|sass|less|pcss|postcss|json|js|cjs|mjs|ts|txt)$/i;
 var SKIP = /* @__PURE__ */ new Set(["node_modules", ".git", "dist", "build", "out", ".next", ".nuxt", ".svelte-kit", "coverage", "vendor", ".turbo", ".cache"]);
 var CONFIG_JS = /(^|[/\\])(tailwind\.config|theme|tokens?|colors?|palette)[\w.-]*\.(c|m)?(js|ts)$/i;
 function globToRe(g) {
@@ -3683,11 +4128,15 @@ function expand(args, cwd = process.cwd()) {
   const jsonOk = (f2) => !/\.json$/i.test(f2) || !/(^|[/\\])(package(-lock)?|tsconfig[\w.-]*|jsconfig|composer|manifest|\.?eslintrc[\w.-]*|renovate|turbo|vercel|firebase|app)\.json$/i.test(f2);
   return [...new Set(out)].filter((f2) => keep(f2) && jsonOk(f2)).sort();
 }
+var skipped = [];
 function groups(files, read = (f2) => fs.readFileSync(f2, "utf8")) {
   const css = [], other = [];
   for (const f2 of files) {
     const text2 = read(f2);
-    if (text2.length > 5e6) continue;
+    if (text2.length > 5e6) {
+      skipped.push(`${f2} (over 5 MB, not read)`);
+      continue;
+    }
     if (/\.(css|scss|sass|less|pcss|postcss)$/i.test(f2)) css.push({ file: f2, text: text2 });
     else other.push({ file: f2, text: text2 });
   }
@@ -3725,7 +4174,7 @@ function whereOf(group, report, pair) {
 var failing = (r2) => r2.pairs.filter((p) => !p.pass && p.kind !== "decor" && !p.optional);
 var lookAlike = (r2) => r2.collisions.filter((c2) => c2.common);
 var link = (r2) => `${SITE}/color-checker`;
-var fixOf = (r2, p) => r2.fix.changes.filter((c2) => c2.mode === p.mode && (c2.name === p.fg.name || c2.name === p.bg.name)).map((c2) => `${c2.name} \u2192 #${c2.to}`).join(", ");
+var fixOf = (r2, p) => r2.fix.changes.filter((c2) => c2.mode === p.mode && (c2.name === p.fg.name || c2.name === p.bg.name)).map((c2) => `${c2.name} \u2192 #${c2.to}`).filter((x, i, l) => l.indexOf(x) === i).join(", ");
 function text(results, opts) {
   const out = [];
   for (const { group, report: r2 } of results) {
@@ -3768,13 +4217,14 @@ function markdown(results) {
   return out.join("\n");
 }
 var esc = (s) => String(s).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+var escP = (s) => esc(s).replace(/:/g, "%3A").replace(/,/g, "%2C");
 function github(results) {
   const out = [];
   for (const { group, report: r2 } of results) {
     for (const p of failing(r2)) {
       const at = whereOf(group, r2, p), fx = fixOf(r2, p);
-      const loc = /^https?:/.test(at.file) ? "" : `file=${rel(at.file)},line=${at.line},col=${at.column},`;
-      out.push(`::error ${loc}title=Contrast ${p.ratio}:1 (needs ${p.need}:1)::${esc(`${p.fg.name} on ${p.bg.name}${r2.input.modes.length > 1 ? ` (${p.mode} mode)` : ""}${loc ? "" : ` at ${(p.why || "").replace(/ sets .*$/, "")}`} is ${p.ratio}:1; ${p.kind === "ui" ? "UI parts need 3:1 (WCAG 1.4.11)" : `text needs ${p.need}:1 (WCAG 1.4.3)`}.${fx ? ` Nearest passing: ${fx}.` : ""}`)}`);
+      const loc = /^https?:/.test(at.file) ? "" : `file=${escP(rel(at.file))},line=${at.line},col=${at.column},`;
+      out.push(`::error ${loc}title=${escP(`Contrast ${p.ratio}:1 (needs ${p.need}:1)`)}::${esc(`${p.fg.name} on ${p.bg.name}${r2.input.modes.length > 1 ? ` (${p.mode} mode)` : ""}${loc ? "" : ` at ${(p.why || "").replace(/ sets .*$/, "")}`} is ${p.ratio}:1; ${p.kind === "ui" ? "UI parts need 3:1 (WCAG 1.4.11)" : `text needs ${p.need}:1 (WCAG 1.4.3)`}.${fx ? ` Nearest passing: ${fx}.` : ""}`)}`);
     }
     for (const c2 of lookAlike(r2)) out.push(`::warning title=Colors look alike::${esc(`${c2.a.name} and ${c2.b.name} look alike with ${c2.worst.label.toLowerCase()} (\u0394E ${c2.worst.d}). Do not let color alone tell them apart (WCAG 1.4.1).`)}`);
   }
@@ -4315,6 +4765,11 @@ async function main() {
     console.log(`everyhexcode ${VERSION2} (engine ${VERSION})`);
     return 0;
   }
+  const bad = [["target", ["AA", "AAA", "aa", "aaa"]], ["format", ["text", "json", "sarif", "markdown", "github"]], ["fail-on", ["fail", "warn", "none"]]].find(([k3, ok]) => a[k3] !== void 0 && !ok.includes(String(a[k3])));
+  if (bad) {
+    console.error(`everyhexcode: --${bad[0]} must be one of ${bad[0] === "target" ? "AA, AAA" : bad[1].join(", ")}`);
+    return 2;
+  }
   const cfg = loadConfig(a.config);
   const target = String(a.target || cfg.target || "AA").toUpperCase() === "AAA" ? "AAA" : "AA";
   const lock = [...cfg.lock || [], ...String(a.lock || "").split(",").filter(Boolean)];
@@ -4344,14 +4799,18 @@ async function main() {
     return 2;
   }
   const results = groups(files).map((group) => ({ group, report: check(group.text, { ...opts, label: path4.basename(group.label) }) })).filter(({ report }) => report.input.colors);
+  for (const x of skipped) console.error(`everyhexcode: skipped ${x}`);
   if (!results.length) {
-    console.error(`No colors found in ${files.length} file(s).`);
-    return 2;
+    console.error(`No colors found in ${files.length} file(s)${skipped.length ? ` (${skipped.length} skipped)` : ""}: nothing to check.`);
+    return skipped.length ? 2 : 0;
   }
   if (cmd === "fix" && a.write) {
     const lines = results.flatMap(({ group, report }) => writeBack(group, report));
+    const unwritten = results.flatMap(({ report }) => report.fix.changes.filter((c2) => !c2.span).map((c2) => `${c2.name}${report.input.modes.length > 1 ? ` (${c2.mode})` : ""}: #${c2.from} \u2192 #${c2.to}`));
     console.log(lines.length ? `Changed:
-${lines.map((l) => "  " + l).join("\n")}` : "Nothing to change.");
+${lines.map((l) => "  " + l).join("\n")}` : unwritten.length ? "No file text to change." : "Nothing to change.");
+    if (unwritten.length) console.log(`Change these where they are defined (they have no value in the file text):
+${unwritten.map((l) => "  " + l).join("\n")}`);
     const again = groups(files).map((group) => ({ group, report: check(group.text, { ...opts, label: path4.basename(group.label) }) }));
     emit(again, a, VERSION2);
     return exitCode(again, failOn);
@@ -4364,6 +4823,10 @@ ${lines.map((l) => "  " + l).join("\n")}` : "Nothing to change.");
   emit(results, a, VERSION2);
   return exitCode(results, failOn);
 }
+process.stdout.on("error", (e3) => {
+  if (e3.code === "EPIPE") process.exit(process.exitCode || 0);
+  throw e3;
+});
 main().then((code) => {
   process.exitCode = code;
 }, (e3) => {

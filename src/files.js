@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const EXT = /\.(css|scss|sass|less|pcss|postcss|json|js|cjs|mjs|ts)$/i;
+export const EXT = /\.(css|scss|sass|less|pcss|postcss|json|js|cjs|mjs|ts|txt)$/i;
 const SKIP = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next', '.nuxt', '.svelte-kit', 'coverage', 'vendor', '.turbo', '.cache']);
 // a JS or TS file is read only when it is a Tailwind config or a theme/tokens file, never as app code
 const CONFIG_JS = /(^|[/\\])(tailwind\.config|theme|tokens?|colors?|palette)[\w.-]*\.(c|m)?(js|ts)$/i;
@@ -58,11 +58,12 @@ export function expand(args, cwd = process.cwd()) {
  * each token or config file alone. Each group keeps where every file starts in the joined text, so findings and fixes
  * go back to the right file and line.
  */
+export const skipped = [];
 export function groups(files, read = (f) => fs.readFileSync(f, 'utf8')) {
   const css = [], other = [];
   for (const f of files) {
     const text = read(f);
-    if (text.length > 5_000_000) continue;
+    if (text.length > 5_000_000) { skipped.push(`${f} (over 5 MB, not read)`); continue; }
     if (/\.(css|scss|sass|less|pcss|postcss)$/i.test(f)) css.push({ file: f, text }); else other.push({ file: f, text });
   }
   const out = [];
