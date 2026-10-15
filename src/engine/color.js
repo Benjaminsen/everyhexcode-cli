@@ -224,10 +224,21 @@ export function family(hex) {
 }
 export const FAMILY_NAMES = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'purple', 'pink', 'brown', 'gray', 'black', 'white'];
 
+/** A colour-vision filter applied the way the Machado (2009) matrices are meant to be: to linear light, not to the
+ * gamma-encoded values (applied to sRGB values, pure red under protanopia came out #271d00 instead of about #6d5f00). */
+export function cvd(filter, severity = 1) {
+  const f = filter(severity);
+  return (c) => {
+    const l = useConv('lrgb')(c);
+    const o = f({ mode: 'rgb', r: l.r, g: l.g, b: l.b, alpha: c.alpha });
+    return useConv('rgb')({ mode: 'lrgb', r: Math.max(0, Math.min(1, o.r)), g: Math.max(0, Math.min(1, o.g)), b: Math.max(0, Math.min(1, o.b)) });
+  };
+}
+
 /** How the colour looks to people with each common colour-vision deficiency. */
 export function simulate(hex) {
   const c = col(hex);
-  const f = (fn) => formatHex(toSrgb(fn(1)(c))).slice(1);
+  const f = (fn) => formatHex(toSrgb(cvd(fn, 1)(c))).slice(1);
   return { protanopia: f(filterDeficiencyProt), deuteranopia: f(filterDeficiencyDeuter), tritanopia: f(filterDeficiencyTrit),
     achromatopsia: formatHex(toSrgb({ mode: 'oklch', l: useConv('oklch')(c).l, c: 0, h: 0 })).slice(1) };
 }

@@ -154,6 +154,7 @@ export function readCss(text) {
   }
   const vars = new Map(); // name|mode → token
   const themeScopes = new Set();
+  const unread = new Map();
   const scoped = new Map(); // block|name → raw value, for var() inside that component's own rules
   const keep = (t, d) => {
     const k = `${t.name}|${t.mode}`; const was = vars.get(k);
@@ -187,7 +188,12 @@ export function readCss(text) {
     if (ref) { t.alias = ref[1]; if (ref[2] && looksColor(ref[2])) t.fallback = ref[2].trim(); }
     else if (hslRef) { t.alias = hslRef[2]; t.wrap = hslRef[1].toLowerCase(); t.wrapAlpha = hslRef[3]; t.span = null; }
     else if (looksColor(raw)) { const c = readOne(raw); if (!c) continue; Object.assign(t, c); }
-    else continue;
+    else {
+      // a colour made by a function this reader cannot work out (Sass tint-color(), rgba($x, .5), #{…}, color-mix with var())
+      const fn = raw.match(/^([a-z][\w-]*)\(/i)?.[1] || (raw.includes('#{') ? '#{…}' : null);
+      if (fn && /colou?r|bg|background|text|fg|border|primary|secondary|accent|brand|link|success|danger|warning|info|surface/i.test(d.prop + ' ' + raw) && !/^(calc|var|url|min|max|clamp|env|attr|counter|linear-gradient|radial-gradient|conic-gradient|repeating-linear-gradient)$/i.test(fn)) unread.set(fn, (unread.get(fn) || 0) + 1);
+      continue;
+    }
     keep(t, d);
   }
   // a later definition of the same name in the same mode wins, as in the cascade
@@ -267,6 +273,8 @@ export function readCss(text) {
     if (r.fg || r.bg || r.border || r.outline) rules.push(r);
   }
   const notes = firstTheme ? [`Only the first theme, ${firstTheme}, is checked${themeScopes.size ? `; ${themeScopes.size} other theme ${themeScopes.size === 1 ? 'scope is' : 'scopes are'} not` : ''}. Paste one theme at a time to check another.`] : themeScopes.size ? [`${themeScopes.size} other theme ${themeScopes.size === 1 ? 'scope was' : 'scopes were'} not checked (${[...themeScopes].slice(0, 3).join(', ')}${themeScopes.size > 3 ? ', …' : ''}): only the default light and dark colors are. Paste one theme at a time to check it.`] : [];
+  const n = [...unread.values()].reduce((a, b) => a + b, 0);
+  if (n) notes.push(`${n} color ${n === 1 ? 'value uses' : 'values use'} a function this checker cannot work out (${[...unread.keys()].slice(0, 5).map((f) => (f.startsWith('#') ? f : `${f}()`)).join(', ')}), so ${n === 1 ? 'it was' : 'they were'} not checked. Paste the compiled CSS to check ${n === 1 ? 'it' : 'them'}.`);
   return { tokens: tokens.filter((t) => t.hex), rules, notes, vars: decls.filter((d) => d.prop.startsWith('--')).length };
 }
 

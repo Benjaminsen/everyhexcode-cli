@@ -4,7 +4,7 @@
 // vision and glare, finds colours that must be told apart but look alike, reads the palette's feel, and fixes the whole
 // palette at once, written back as a diff of the text that was pasted. All of it is computed; nothing is stored.
 import { converter, differenceEuclidean, filterDeficiencyDeuter, filterDeficiencyProt, filterDeficiencyTrit, formatHex, parse as cparse, toGamut, wcagContrast, wcagLuminance } from 'culori/fn';
-import { contrast, info, moods, textOn } from './color.js';
+import { contrast, cvd, info, moods, textOn } from './color.js';
 import { readInput } from './check-input.js';
 
 const okDist = differenceEuclidean('oklab');
@@ -61,7 +61,7 @@ export function roleOf(name) {
   if (w.length > 1 && ['foreground', 'fg', 'contrast', 'text', 'content', 'ink', 'icon'].includes(last) && !FG_WORDS.includes(w[0])) {
     return { role: 'text', on: w.slice(0, -1).join('-'), why: `named …-${last}` };
   }
-  if (has(BORDER_WORDS)) return { role: has(['input', 'ring', 'focus']) ? 'control' : 'border' };
+  if (has(BORDER_WORDS)) return { role: has(['input', 'ring', 'focus', 'outline', 'field']) ? 'control' : 'border' };
   if (FG_WORDS.includes(w[0]) && w.length > 1 && !has(BG_WORDS)) return { role: 'text', sub: w.slice(1).join('-') };
   if (has(FG_WORDS) && !has(BG_WORDS)) return { role: 'text' };
   if (has(BG_WORDS)) return { role: 'bg', accent: has(ACCENT_WORDS) };
@@ -99,12 +99,12 @@ const needOf = (kind, target) => (kind === 'decor' ? 0 : (TARGETS[target] || TAR
 // ---------------------------------------------------------------------------------------------------------------- vision
 
 export const VISION = [
-  { id: 'protanopia', label: 'Protanopia', note: 'no red cones, about 1% of men', f: (c) => filterDeficiencyProt(1)(c) },
-  { id: 'deuteranopia', label: 'Deuteranopia', note: 'no green cones, about 1% of men', f: (c) => filterDeficiencyDeuter(1)(c) },
-  { id: 'tritanopia', label: 'Tritanopia', note: 'no blue cones, rare', f: (c) => filterDeficiencyTrit(1)(c) },
-  { id: 'protanomaly', label: 'Protanomaly', note: 'weak red cones, about 1% of men', f: (c) => filterDeficiencyProt(0.6)(c) },
-  { id: 'deuteranomaly', label: 'Deuteranomaly', note: 'weak green cones, about 5% of men, the most common', f: (c) => filterDeficiencyDeuter(0.6)(c) },
-  { id: 'tritanomaly', label: 'Tritanomaly', note: 'weak blue cones, rare', f: (c) => filterDeficiencyTrit(0.6)(c) },
+  { id: 'protanopia', label: 'Protanopia', note: 'no red cones, about 1% of men', f: cvd(filterDeficiencyProt, 1) },
+  { id: 'deuteranopia', label: 'Deuteranopia', note: 'no green cones, about 1% of men', f: cvd(filterDeficiencyDeuter, 1) },
+  { id: 'tritanopia', label: 'Tritanopia', note: 'no blue cones, rare', f: cvd(filterDeficiencyTrit, 1) },
+  { id: 'protanomaly', label: 'Protanomaly', note: 'weak red cones, about 1% of men', f: cvd(filterDeficiencyProt, 0.6) },
+  { id: 'deuteranomaly', label: 'Deuteranomaly', note: 'weak green cones, about 5% of men, the most common', f: cvd(filterDeficiencyDeuter, 0.6) },
+  { id: 'tritanomaly', label: 'Tritanomaly', note: 'weak blue cones, rare', f: cvd(filterDeficiencyTrit, 0.6) },
   { id: 'achromatopsia', label: 'Achromatopsia', note: 'no color at all, very rare', f: (c) => ({ mode: 'oklch', l: toOklch(c).l, c: 0, h: 0 }) },
 ];
 const simCache = new Map();
@@ -238,7 +238,16 @@ export function plan(read, opts = {}) {
     // 1. CSS rules: what a selector really sets
     for (const [a, b] of pairsLater.splice(0)) add(a, b, 'text', "the browser's default text on the page background");
     for (const r of modeRules.filter((x) => !(UTILITY.test(x.selector) && !(x.fg && x.bg)) && !(mode === 'dark' && x.mode === 'light' && ![x.fg, x.bg, x.border, x.outline].some((v) => v?.token)))) {
-      const tok = (v) => (v && !v.image ? (all.find((t) => t.name === v.token) || synth(tokens, v, mode, r.selector)) : null);
+      const tok = (v) => {
+        if (!v || v.image) return null;
+        if (v.token) {
+          const own = tokens.find((t) => t.name === v.token && t.mode === mode);
+          // an alias set aside as a duplicate (--color-x: var(--x)) stands for its source in this mode
+          const real = own && own.role === 'ignore' ? all.find((t) => key(t) === key(own) && t.role !== 'ignore') : own;
+          if (real && real.role !== 'ignore') return real;
+        }
+        return synth(tokens, v, mode, r.selector);
+      };
       // a text colour alone is checked on the page background, unless the selector says it sits on something else
       if (!r.bg && r.fg && (ELSEWHERE.test(r.selector) || TEXT_UTILITY.test(r.selector))) continue;
       // a rule that sets only the text colour of a state (.button:hover) takes the background its base rule sets
@@ -623,7 +632,15 @@ export function applyFix(text, changes, label = 'colors') {
     while (e + 1 < A.length && (changed[e + 1] || changed.slice(e + 1, e + 4).some(Boolean))) e++;
     e = Math.min(A.length - 1, e + 2);
     const lines = [];
-    for (let k = s; k <= e; k++) { if (changed[k]) lines.push('-' + A[k], '+' + B[k]); else lines.push(' ' + A[k]); }
+    // a minified stylesheet is one long line: show the part around each change, not the whole file
+    const cut = (a, b) => {
+      if (a.length <= 300) return [a, b];
+      let i = 0; while (i < a.length && a[i] === b[i]) i++;
+      let j = 0; while (j < a.length - i && a[a.length - 1 - j] === b[b.length - 1 - j]) j++;
+      const from = Math.max(0, i - 80);
+      return [`${from ? '…' : ''}${a.slice(from, Math.min(a.length, a.length - j + 80))}${a.length - j + 80 < a.length ? '…' : ''}`, `${from ? '…' : ''}${b.slice(from, Math.min(b.length, b.length - j + 80))}${b.length - j + 80 < b.length ? '…' : ''}`];
+    };
+    for (let k = s; k <= e; k++) { if (changed[k]) { const [x, y] = cut(A[k], B[k]); lines.push('-' + x, '+' + y); } else lines.push(' ' + (A[k].length > 300 ? A[k].slice(0, 120) + '…' : A[k])); }
     const len = e - s + 1;
     hunks.push(`@@ -${s + 1},${len} +${s + 1},${len} @@\n${lines.join('\n')}`);
     i = e;

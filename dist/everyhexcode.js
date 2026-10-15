@@ -2847,6 +2847,14 @@ function contrast2(a, b) {
   return [3, 4.5, 7].some((t) => x < t && r2 >= t) ? Math.floor(x * 100) / 100 : r2;
 }
 var inSrgb = inGamut("rgb");
+function cvd(filter, severity = 1) {
+  const f2 = filter(severity);
+  return (c2) => {
+    const l = useConv("lrgb")(c2);
+    const o = f2({ mode: "rgb", r: l.r, g: l.g, b: l.b, alpha: c2.alpha });
+    return useConv("rgb")({ mode: "lrgb", r: Math.max(0, Math.min(1, o.r)), g: Math.max(0, Math.min(1, o.g)), b: Math.max(0, Math.min(1, o.b)) });
+  };
+}
 function moods(hexes) {
   const all = hexes.map((h) => useConv("oklch")(col(h)));
   const darkest = all.reduce((m, x) => x.l < m.l ? x : m, all[0]);
@@ -3045,6 +3053,7 @@ function readCss(text2) {
   }
   const vars = /* @__PURE__ */ new Map();
   const themeScopes = /* @__PURE__ */ new Set();
+  const unread = /* @__PURE__ */ new Map();
   const scoped = /* @__PURE__ */ new Map();
   const keep = (t, d) => {
     const k3 = `${t.name}|${t.mode}`;
@@ -3094,7 +3103,11 @@ function readCss(text2) {
       const c2 = readOne(raw);
       if (!c2) continue;
       Object.assign(t, c2);
-    } else continue;
+    } else {
+      const fn4 = raw.match(/^([a-z][\w-]*)\(/i)?.[1] || (raw.includes("#{") ? "#{\u2026}" : null);
+      if (fn4 && /colou?r|bg|background|text|fg|border|primary|secondary|accent|brand|link|success|danger|warning|info|surface/i.test(d.prop + " " + raw) && !/^(calc|var|url|min|max|clamp|env|attr|counter|linear-gradient|radial-gradient|conic-gradient|repeating-linear-gradient)$/i.test(fn4)) unread.set(fn4, (unread.get(fn4) || 0) + 1);
+      continue;
+    }
     keep(t, d);
   }
   for (let i2 = tokens.length - 1; i2 >= 0; i2--) if (tokens[i2].dropped) tokens.splice(i2, 1);
@@ -3207,6 +3220,8 @@ function readCss(text2) {
     if (r2.fg || r2.bg || r2.border || r2.outline) rules.push(r2);
   }
   const notes = firstTheme ? [`Only the first theme, ${firstTheme}, is checked${themeScopes.size ? `; ${themeScopes.size} other theme ${themeScopes.size === 1 ? "scope is" : "scopes are"} not` : ""}. Paste one theme at a time to check another.`] : themeScopes.size ? [`${themeScopes.size} other theme ${themeScopes.size === 1 ? "scope was" : "scopes were"} not checked (${[...themeScopes].slice(0, 3).join(", ")}${themeScopes.size > 3 ? ", \u2026" : ""}): only the default light and dark colors are. Paste one theme at a time to check it.`] : [];
+  const n = [...unread.values()].reduce((a, b) => a + b, 0);
+  if (n) notes.push(`${n} color ${n === 1 ? "value uses" : "values use"} a function this checker cannot work out (${[...unread.keys()].slice(0, 5).map((f2) => f2.startsWith("#") ? f2 : `${f2}()`).join(", ")}), so ${n === 1 ? "it was" : "they were"} not checked. Paste the compiled CSS to check ${n === 1 ? "it" : "them"}.`);
   return { tokens: tokens.filter((t) => t.hex), rules, notes, vars: decls.filter((d) => d.prop.startsWith("--")).length };
 }
 function splitLightDark(v) {
@@ -3578,7 +3593,7 @@ function roleOf(name) {
   if (w.length > 1 && ["foreground", "fg", "contrast", "text", "content", "ink", "icon"].includes(last) && !FG_WORDS.includes(w[0])) {
     return { role: "text", on: w.slice(0, -1).join("-"), why: `named \u2026-${last}` };
   }
-  if (has(BORDER_WORDS)) return { role: has(["input", "ring", "focus"]) ? "control" : "border" };
+  if (has(BORDER_WORDS)) return { role: has(["input", "ring", "focus", "outline", "field"]) ? "control" : "border" };
   if (FG_WORDS.includes(w[0]) && w.length > 1 && !has(BG_WORDS)) return { role: "text", sub: w.slice(1).join("-") };
   if (has(FG_WORDS) && !has(BG_WORDS)) return { role: "text" };
   if (has(BG_WORDS)) return { role: "bg", accent: has(ACCENT_WORDS) };
@@ -3604,12 +3619,12 @@ var kindLabel = (k3) => KIND_LABEL[k3] || k3;
 var isLarge = (px, weight = 400) => px >= 24 || weight >= 700 && px >= 18.66;
 var needOf = (kind, target) => kind === "decor" ? 0 : (TARGETS[target] || TARGETS.AA)[kind] ?? 4.5;
 var VISION = [
-  { id: "protanopia", label: "Protanopia", note: "no red cones, about 1% of men", f: (c2) => filterDeficiencyProt(1)(c2) },
-  { id: "deuteranopia", label: "Deuteranopia", note: "no green cones, about 1% of men", f: (c2) => filterDeficiencyDeuter(1)(c2) },
-  { id: "tritanopia", label: "Tritanopia", note: "no blue cones, rare", f: (c2) => filterDeficiencyTrit(1)(c2) },
-  { id: "protanomaly", label: "Protanomaly", note: "weak red cones, about 1% of men", f: (c2) => filterDeficiencyProt(0.6)(c2) },
-  { id: "deuteranomaly", label: "Deuteranomaly", note: "weak green cones, about 5% of men, the most common", f: (c2) => filterDeficiencyDeuter(0.6)(c2) },
-  { id: "tritanomaly", label: "Tritanomaly", note: "weak blue cones, rare", f: (c2) => filterDeficiencyTrit(0.6)(c2) },
+  { id: "protanopia", label: "Protanopia", note: "no red cones, about 1% of men", f: cvd(filterDeficiencyProt, 1) },
+  { id: "deuteranopia", label: "Deuteranopia", note: "no green cones, about 1% of men", f: cvd(filterDeficiencyDeuter, 1) },
+  { id: "tritanopia", label: "Tritanopia", note: "no blue cones, rare", f: cvd(filterDeficiencyTrit, 1) },
+  { id: "protanomaly", label: "Protanomaly", note: "weak red cones, about 1% of men", f: cvd(filterDeficiencyProt, 0.6) },
+  { id: "deuteranomaly", label: "Deuteranomaly", note: "weak green cones, about 5% of men, the most common", f: cvd(filterDeficiencyDeuter, 0.6) },
+  { id: "tritanomaly", label: "Tritanomaly", note: "weak blue cones, rare", f: cvd(filterDeficiencyTrit, 0.6) },
   { id: "achromatopsia", label: "Achromatopsia", note: "no color at all, very rare", f: (c2) => ({ mode: "oklch", l: toOklch(c2).l, c: 0, h: 0 }) }
 ];
 var simCache = /* @__PURE__ */ new Map();
@@ -3746,7 +3761,15 @@ function plan(read, opts = {}) {
     const texts = all.filter((t) => t.role === "text");
     for (const [a, b] of pairsLater.splice(0)) add(a, b, "text", "the browser's default text on the page background");
     for (const r2 of modeRules.filter((x) => !(UTILITY.test(x.selector) && !(x.fg && x.bg)) && !(mode === "dark" && x.mode === "light" && ![x.fg, x.bg, x.border, x.outline].some((v) => v?.token)))) {
-      const tok = (v) => v && !v.image ? all.find((t) => t.name === v.token) || synth(tokens, v, mode, r2.selector) : null;
+      const tok = (v) => {
+        if (!v || v.image) return null;
+        if (v.token) {
+          const own = tokens.find((t) => t.name === v.token && t.mode === mode);
+          const real = own && own.role === "ignore" ? all.find((t) => key(t) === key(own) && t.role !== "ignore") : own;
+          if (real && real.role !== "ignore") return real;
+        }
+        return synth(tokens, v, mode, r2.selector);
+      };
       if (!r2.bg && r2.fg && (ELSEWHERE.test(r2.selector) || TEXT_UTILITY.test(r2.selector))) continue;
       const base = !r2.bg ? modeRules.find((x) => x !== r2 && x.bg && !x.bg.image && baseSel(x.selector) === baseSel(r2.selector) && states(x.selector) === states(r2.selector)) || modeRules.find((x) => x !== r2 && x.bg && !x.bg.image && baseSel(x.selector) === baseSel(r2.selector) && !states(x.selector)) : null;
       const bg = r2.bg && !r2.bg.image ? tok(r2.bg) : base ? tok(base.bg) : main2;
@@ -4177,9 +4200,20 @@ function applyFix(text2, changes, label = "colors") {
     while (e3 + 1 < A.length && (changed[e3 + 1] || changed.slice(e3 + 1, e3 + 4).some(Boolean))) e3++;
     e3 = Math.min(A.length - 1, e3 + 2);
     const lines = [];
+    const cut = (a, b) => {
+      if (a.length <= 300) return [a, b];
+      let i2 = 0;
+      while (i2 < a.length && a[i2] === b[i2]) i2++;
+      let j = 0;
+      while (j < a.length - i2 && a[a.length - 1 - j] === b[b.length - 1 - j]) j++;
+      const from = Math.max(0, i2 - 80);
+      return [`${from ? "\u2026" : ""}${a.slice(from, Math.min(a.length, a.length - j + 80))}${a.length - j + 80 < a.length ? "\u2026" : ""}`, `${from ? "\u2026" : ""}${b.slice(from, Math.min(b.length, b.length - j + 80))}${b.length - j + 80 < b.length ? "\u2026" : ""}`];
+    };
     for (let k3 = s; k3 <= e3; k3++) {
-      if (changed[k3]) lines.push("-" + A[k3], "+" + B[k3]);
-      else lines.push(" " + A[k3]);
+      if (changed[k3]) {
+        const [x, y] = cut(A[k3], B[k3]);
+        lines.push("-" + x, "+" + y);
+      } else lines.push(" " + (A[k3].length > 300 ? A[k3].slice(0, 120) + "\u2026" : A[k3]));
     }
     const len = e3 - s + 1;
     hunks.push(`@@ -${s + 1},${len} +${s + 1},${len} @@
@@ -4237,8 +4271,8 @@ function summarize(r2) {
     lines.push(`Changing ${ch.length} ${ch.length === 1 ? "color" : "colors"} fixes ${r2.fix.remaining.length ? "most of it" : "every failing pair"}: ${ch.slice(0, 4).map((c2) => `${c2.name === "#" + c2.from ? "" : c2.name + " "}${r2.input.modes.length > 1 ? `(${c2.mode}) ` : ""}#${c2.from} \u2192 #${c2.to} (\u0394E ${c2.deltaE})`).join(", ")}${ch.length > 4 ? ", \u2026" : ""}.`);
   }
   if (r2.fix.remaining.length) lines.push(`${r2.fix.remaining.length} ${r2.fix.remaining.length === 1 ? "pair needs" : "pairs need"} both colors to move; see the suggestions.`);
-  const cvd = r2.pairs.filter((p) => p.pass && p.vision && p.vision.ratio < p.need);
-  if (cvd.length) lines.push(`${cvd.length} passing ${cvd.length === 1 ? "pair drops" : "pairs drop"} below ${r2.standard} for some color vision (${[...new Set(cvd.map((p) => p.vision.label))].join(", ")}).`);
+  const cvd2 = r2.pairs.filter((p) => p.pass && p.vision && p.vision.ratio < p.need);
+  if (cvd2.length) lines.push(`${cvd2.length} passing ${cvd2.length === 1 ? "pair drops" : "pairs drop"} below ${r2.standard} for some color vision (${[...new Set(cvd2.map((p) => p.vision.label))].join(", ")}).`);
   const same = r2.collisions.filter((c2) => c2.normal >= 10 && c2.common), rare = r2.collisions.filter((c2) => c2.normal >= 10 && !c2.common);
   if (same.length) lines.push(`${same.length} ${same.length === 1 ? "pair" : "pairs"} of ${same[0].group.toLowerCase()} look alike with red-green color blindness${rare.length ? ` (${rare.length} more only with rarer types)` : ""}: don't let color alone tell them apart.`);
   else if (rare.length) lines.push(`${rare.length} ${rare.length === 1 ? "pair looks" : "pairs look"} alike only with rarer color blindness (${[...new Set(rare.map((c2) => c2.worst.label))].join(", ")}).`);
