@@ -240,7 +240,8 @@ export function simulate(hex) {
   const c = col(hex);
   const f = (fn) => formatHex(toSrgb(cvd(fn, 1)(c))).slice(1);
   return { protanopia: f(filterDeficiencyProt), deuteranopia: f(filterDeficiencyDeuter), tritanopia: f(filterDeficiencyTrit),
-    achromatopsia: formatHex(toSrgb({ mode: 'oklch', l: useConv('oklch')(c).l, c: 0, h: 0 })).slice(1) };
+    // the grey of the same luminance, so contrast stays what it is
+    achromatopsia: (() => { const y = wcagLuminance(c); return formatHex(useConv('rgb')({ mode: 'lrgb', r: y, g: y, b: y })).slice(1); })() };
 }
 
 /**

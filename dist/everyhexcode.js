@@ -3101,8 +3101,12 @@ function readCss(text2) {
       t.span = null;
     } else if (looksColor(raw)) {
       const c2 = readOne(raw);
-      if (!c2) continue;
-      Object.assign(t, c2);
+      if (c2) Object.assign(t, c2);
+      else if (/var\(/.test(raw)) t.mixRaw = raw;
+      else {
+        unread.set(raw.match(/^([a-z][\w-]*)\(/i)?.[1] || "color", (unread.get(raw.match(/^([a-z][\w-]*)\(/i)?.[1] || "color") || 0) + 1);
+        continue;
+      }
     } else {
       const fn4 = raw.match(/^([a-z][\w-]*)\(/i)?.[1] || (raw.includes("#{") ? "#{\u2026}" : null);
       if (fn4 && /colou?r|bg|background|text|fg|border|primary|secondary|accent|brand|link|success|danger|warning|info|surface/i.test(d.prop + " " + raw) && !/^(calc|var|url|min|max|clamp|env|attr|counter|linear-gradient|radial-gradient|conic-gradient|repeating-linear-gradient)$/i.test(fn4)) unread.set(fn4, (unread.get(fn4) || 0) + 1);
@@ -3126,6 +3130,15 @@ function readCss(text2) {
     return t;
   };
   tokens.forEach((t) => resolve(t));
+  for (const t of tokens) if (!t.hex && t.mixRaw) {
+    const txt = t.mixRaw.replace(/var\(\s*(--[\w-]+)\s*(?:,[^)]*)?\)/g, (m, n2) => {
+      const x = vars.get(`${n2}|${t.mode}`) || vars.get(`${n2}|light`);
+      return x?.hex ? "#" + x.hex + (x.alpha < 1 ? Math.round(x.alpha * 255).toString(16).padStart(2, "0") : "") : m;
+    });
+    const c2 = readOne(txt);
+    if (c2) Object.assign(t, c2, { span: null, via: void 0 });
+    else unread.set("color-mix", (unread.get("color-mix") || 0) + 1);
+  }
   for (const t of tokens) if (!t.hex && t.fallback) {
     const c2 = readOne(t.fallback);
     if (c2) Object.assign(t, c2);
@@ -3452,9 +3465,11 @@ function readJson(text2) {
     };
     walk2(data, []);
   }
+  const byLower = new Map([...byName.entries()].map(([k3, v]) => [k3.toLowerCase(), v]));
   for (const t of tokens) {
     let x = t, n = 0;
-    while (x && !x.hex && x.alias && n++ < 8) x = byName.get(`${x.alias}|${t.mode}`) || byName.get(`${x.alias}|light`);
+    const find = (a, m) => byName.get(`${a}|${m}`) || byLower.get(`${a.replace(/^@/, "").toLowerCase()}|${m}`);
+    while (x && !x.hex && x.alias && n++ < 8) x = find(x.alias, t.mode) || find(x.alias, "light");
     if (x?.hex && x !== t) Object.assign(t, { hex: x.hex, alpha: x.alpha, via: x.name });
   }
   const unresolved = tokens.filter((t) => !t.hex && t.alias).length;
@@ -3535,6 +3550,7 @@ function readInput(text2, max = 2e5) {
   let out;
   if (/^[{[]/.test(t)) {
     const j = readJson(t);
+    if (!j && /^\s*\{[\s\S]*"\s*:/.test(t)) return { kind: "json", tokens: [], rules: [], warnings: ["This looks like JSON but could not be read (check for missing quotes or commas): no colors were checked."] };
     if (j) out = { kind: j.kind, tokens: j.tokens.map((x) => ({ ...x, span: x.span ? [x.span[0] + s.indexOf(t), x.span[1] + s.indexOf(t)] : null })), rules: [], notes: j.notes, vars: j.vars };
   }
   if (!out && /(module\.exports|export\s+default|\bcolors\s*:\s*\{)/.test(s) && !/--[\w-]+\s*:/.test(s)) {
@@ -3625,7 +3641,11 @@ var VISION = [
   { id: "protanomaly", label: "Protanomaly", note: "weak red cones, about 1% of men", f: cvd(filterDeficiencyProt, 0.6) },
   { id: "deuteranomaly", label: "Deuteranomaly", note: "weak green cones, about 5% of men, the most common", f: cvd(filterDeficiencyDeuter, 0.6) },
   { id: "tritanomaly", label: "Tritanomaly", note: "weak blue cones, rare", f: cvd(filterDeficiencyTrit, 0.6) },
-  { id: "achromatopsia", label: "Achromatopsia", note: "no color at all, very rare", f: (c2) => ({ mode: "oklch", l: toOklch(c2).l, c: 0, h: 0 }) }
+  // no colour at all: the grey of the same luminance (so contrast is what it is)
+  { id: "achromatopsia", label: "Achromatopsia", note: "no color at all, very rare", f: (c2) => {
+    const y = luminance(c2);
+    return { mode: "lrgb", r: y, g: y, b: y };
+  } }
 ];
 var simCache = /* @__PURE__ */ new Map();
 function seeAs(hex3, id) {
@@ -4081,7 +4101,7 @@ function solve(planned, target = "AA", lock = [], opts = {}) {
       let to = null, via = null;
       const sib = siblings(t);
       if (sib) {
-        const hit = sib.filter(({ x }) => test(x.hex)).sort((a, b2) => dE(prev, a.x.hex) - dE(prev, b2.x.hex))[0];
+        const hit = sib.filter(({ x }) => test(x.hex) && dE(prev, x.hex) <= 20).sort((a, b2) => dE(prev, a.x.hex) - dE(prev, b2.x.hex))[0];
         if (hit) {
           to = hit.x.hex;
           via = { from: hit.src.name, to: hit.x.name };
@@ -4116,6 +4136,7 @@ function solve(planned, target = "AA", lock = [], opts = {}) {
       flipped.add(f2.id);
     }
   }
+  const isRef = (raw) => /^\s*(var\(|\{|[$@][\w-]+\s*$)/.test(String(raw || ""));
   const changes = [...moved.values()].map((t) => ({
     name: t.name,
     mode: t.mode,
@@ -4123,10 +4144,11 @@ function solve(planned, target = "AA", lock = [], opts = {}) {
     from: t.hex,
     to: value.get(t.id),
     deltaE: dE(t.hex, value.get(t.id)),
-    span: t.span,
+    span: !repoint.get(t.id) && isRef(t.raw) ? null : t.span,
     raw: t.raw,
     format: t.format,
     alpha: t.alpha,
+    ...!repoint.get(t.id) && isRef(t.raw) ? { newStep: true } : {},
     ...repoint.get(t.id) ? { repoint: repoint.get(t.id) } : {},
     ...copies.get(t.id) ? { alsoDark: true } : {},
     ...flipped.has(t.id) ? { flipped: true } : {}
@@ -4191,6 +4213,7 @@ function applyFix(text2, changes, label = "colors") {
   let out = text2;
   for (const e3 of edits) out = out.slice(0, e3.span[0]) + e3.out + out.slice(e3.span[1]);
   const A = text2.split("\n"), B = out.split("\n");
+  if (A.length !== B.length) return { text: out, diff: "", unwritten: changes.filter((c2) => !c2.span).map((c2) => c2.name) };
   const changed = A.map((l, i) => l !== B[i]);
   const hunks = [];
   for (let i = 0; i < A.length; i++) {

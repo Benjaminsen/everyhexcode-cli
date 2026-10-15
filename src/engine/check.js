@@ -105,7 +105,8 @@ export const VISION = [
   { id: 'protanomaly', label: 'Protanomaly', note: 'weak red cones, about 1% of men', f: cvd(filterDeficiencyProt, 0.6) },
   { id: 'deuteranomaly', label: 'Deuteranomaly', note: 'weak green cones, about 5% of men, the most common', f: cvd(filterDeficiencyDeuter, 0.6) },
   { id: 'tritanomaly', label: 'Tritanomaly', note: 'weak blue cones, rare', f: cvd(filterDeficiencyTrit, 0.6) },
-  { id: 'achromatopsia', label: 'Achromatopsia', note: 'no color at all, very rare', f: (c) => ({ mode: 'oklch', l: toOklch(c).l, c: 0, h: 0 }) },
+  // no colour at all: the grey of the same luminance (so contrast is what it is)
+  { id: 'achromatopsia', label: 'Achromatopsia', note: 'no color at all, very rare', f: (c) => { const y = wcagLuminance(c); return { mode: 'lrgb', r: y, g: y, b: y }; } },
 ];
 const simCache = new Map();
 /** How a colour looks with one kind of colour vision. */
@@ -554,7 +555,8 @@ export function solve(planned, target = 'AA', lock = [], opts = {}) {
       // a step of the same scale first (re-pointing keeps the design system whole), else the nearest lightness
       let to = null, via = null;
       const sib = siblings(t);
-      if (sib) { const hit = sib.filter(({ x }) => test(x.hex)).sort((a, b2) => dE(prev, a.x.hex) - dE(prev, b2.x.hex))[0]; if (hit) { to = hit.x.hex; via = { from: hit.src.name, to: hit.x.name }; } }
+      // a step far away (gray-400 to gray-900) would merge two roles: then a new step is suggested instead
+      if (sib) { const hit = sib.filter(({ x }) => test(x.hex) && dE(prev, x.hex) <= 20).sort((a, b2) => dE(prev, a.x.hex) - dE(prev, b2.x.hex))[0]; if (hit) { to = hit.x.hex; via = { from: hit.src.name, to: hit.x.name }; } }
       if (!to) to = nearestL(prev, test);
       if (!to) continue;
       const fixes = failing.filter((p) => all.includes(p.fg.id) || all.includes(p.bg.id)).length;
@@ -575,7 +577,10 @@ export function solve(planned, target = 'AA', lock = [], opts = {}) {
     const best = ['000000', 'ffffff', prev].map((seed) => nearestL(seed, (x) => { setAll(f, x); const r = mine.every((q) => ok(q, value, q === p ? margin : 0)); setAll(f, prev); return r; })).filter(Boolean).sort((a, c) => dE(prev, a) - dE(prev, c))[0];
     if (best) { setAll(f, best); moved.set(f.id, f); flipped.add(f.id); }
   }
-  const changes = [...moved.values()].map((t) => ({ name: t.name, mode: t.mode, role: t.role, from: t.hex, to: value.get(t.id), deltaE: dE(t.hex, value.get(t.id)), span: t.span, raw: t.raw, format: t.format, alpha: t.alpha,
+  // a reference (var(--gray-400), {color.base.gray.400}, $cyan) is never overwritten with a value: the new value is
+  // given as a step to add to the palette and point to
+  const isRef = (raw) => /^\s*(var\(|\{|[$@][\w-]+\s*$)/.test(String(raw || ''));
+  const changes = [...moved.values()].map((t) => ({ name: t.name, mode: t.mode, role: t.role, from: t.hex, to: value.get(t.id), deltaE: dE(t.hex, value.get(t.id)), span: !repoint.get(t.id) && isRef(t.raw) ? null : t.span, raw: t.raw, format: t.format, alpha: t.alpha, ...(!repoint.get(t.id) && isRef(t.raw) ? { newStep: true } : {}),
     ...(repoint.get(t.id) ? { repoint: repoint.get(t.id) } : {}), ...(copies.get(t.id) ? { alsoDark: true } : {}), ...(flipped.has(t.id) ? { flipped: true } : {}) }))
     .filter((c) => c.from !== c.to);
   const why = (p) => {
@@ -623,6 +628,8 @@ export function applyFix(text, changes, label = 'colors') {
   let out = text;
   for (const e of edits) out = out.slice(0, e.span[0]) + e.out + out.slice(e.span[1]);
   const A = text.split('\n'), B = out.split('\n');
+  // a value written over several lines changes the line count: then the fixed text is given without a line diff
+  if (A.length !== B.length) return { text: out, diff: '', unwritten: changes.filter((c) => !c.span).map((c) => c.name) };
   const changed = A.map((l, i) => l !== B[i]);
   const hunks = [];
   for (let i = 0; i < A.length; i++) {

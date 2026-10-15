@@ -187,10 +187,16 @@ export function readCss(text) {
     const t = { name: d.prop, mode: d.mode, raw, span: d.span, format: formatOf(raw) };
     if (ref) { t.alias = ref[1]; if (ref[2] && looksColor(ref[2])) t.fallback = ref[2].trim(); }
     else if (hslRef) { t.alias = hslRef[2]; t.wrap = hslRef[1].toLowerCase(); t.wrapAlpha = hslRef[3]; t.span = null; }
-    else if (looksColor(raw)) { const c = readOne(raw); if (!c) continue; Object.assign(t, c); }
+    else if (looksColor(raw)) {
+      const c = readOne(raw);
+      if (c) Object.assign(t, c);
+      else if (/var\(/.test(raw)) t.mixRaw = raw; // color-mix(… var(--x) …): worked out once the variables are known
+      else { unread.set(raw.match(/^([a-z][\w-]*)\(/i)?.[1] || 'color', (unread.get(raw.match(/^([a-z][\w-]*)\(/i)?.[1] || 'color') || 0) + 1); continue; }
+    }
     else {
       // a colour made by a function this reader cannot work out (Sass tint-color(), rgba($x, .5), #{…}, color-mix with var())
       const fn = raw.match(/^([a-z][\w-]*)\(/i)?.[1] || (raw.includes('#{') ? '#{…}' : null);
+      // color-mix() over variables is worked out after the variables are known (below); anything else is named here
       if (fn && /colou?r|bg|background|text|fg|border|primary|secondary|accent|brand|link|success|danger|warning|info|surface/i.test(d.prop + ' ' + raw) && !/^(calc|var|url|min|max|clamp|env|attr|counter|linear-gradient|radial-gradient|conic-gradient|repeating-linear-gradient)$/i.test(fn)) unread.set(fn, (unread.get(fn) || 0) + 1);
       continue;
     }
@@ -213,6 +219,12 @@ export function readCss(text) {
     return t;
   };
   tokens.forEach((t) => resolve(t));
+  // color-mix() over variables, now that they are known
+  for (const t of tokens) if (!t.hex && t.mixRaw) {
+    const txt = t.mixRaw.replace(/var\(\s*(--[\w-]+)\s*(?:,[^)]*)?\)/g, (m, n) => { const x = vars.get(`${n}|${t.mode}`) || vars.get(`${n}|light`); return x?.hex ? '#' + x.hex + (x.alpha < 1 ? Math.round(x.alpha * 255).toString(16).padStart(2, '0') : '') : m; });
+    const c = readOne(txt);
+    if (c) Object.assign(t, c, { span: null, via: undefined }); else unread.set('color-mix', (unread.get('color-mix') || 0) + 1);
+  }
   // var(--missing, #999): the fallback is what the browser uses
   for (const t of tokens) if (!t.hex && t.fallback) { const c = readOne(t.fallback); if (c) Object.assign(t, c); }
   // var() resolves where it is used: an alias set once (Tailwind v4's @theme --color-background: var(--background))
@@ -417,9 +429,12 @@ export function readJson(text) {
     };
     walk(data, []);
   }
+  const byLower = new Map([...byName.entries()].map(([k, v]) => [k.toLowerCase(), v]));
   for (const t of tokens) {
     let x = t, n = 0;
-    while (x && !x.hex && x.alias && n++ < 8) x = byName.get(`${x.alias}|${t.mode}`) || byName.get(`${x.alias}|light`);
+    // references are matched as written, then without case and a leading @ ({@color_primitives.Yellow.200}, Figma's SDS)
+    const find = (a, m) => byName.get(`${a}|${m}`) || byLower.get(`${a.replace(/^@/, '').toLowerCase()}|${m}`);
+    while (x && !x.hex && x.alias && n++ < 8) x = find(x.alias, t.mode) || find(x.alias, 'light');
     if (x?.hex && x !== t) Object.assign(t, { hex: x.hex, alpha: x.alpha, via: x.name });
   }
   const unresolved = tokens.filter((t) => !t.hex && t.alias).length;
@@ -502,6 +517,8 @@ export function readInput(text, max = 200000) {
   let out;
   if (/^[{[]/.test(t)) {
     const j = readJson(t);
+    // text that starts like JSON but is not (even as JSON5) is an error to report, not a list of colours to guess at
+    if (!j && /^\s*\{[\s\S]*"\s*:/.test(t)) return { kind: 'json', tokens: [], rules: [], warnings: ['This looks like JSON but could not be read (check for missing quotes or commas): no colors were checked.'] };
     if (j) out = { kind: j.kind, tokens: j.tokens.map((x) => ({ ...x, span: x.span ? [x.span[0] + s.indexOf(t), x.span[1] + s.indexOf(t)] : null })), rules: [], notes: j.notes, vars: j.vars };
   }
   if (!out && /(module\.exports|export\s+default|\bcolors\s*:\s*\{)/.test(s) && !/--[\w-]+\s*:/.test(s)) {
