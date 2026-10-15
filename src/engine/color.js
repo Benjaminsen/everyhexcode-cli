@@ -281,7 +281,8 @@ export function fixContrast(hex, against, target = 4.5) {
   const o = useConv('oklch')(col(hex));
   const bgL = useConv('oklch')(col(against)).l;
   const dir = o.l > bgL ? 1 : -1;
-  for (const d of [dir, -dir]) {
+  // only away from the other colour: a fix never turns light text dark or a light background dark
+  for (const d of [dir]) {
     for (let l = Math.min(1, Math.max(0, o.l)); l >= 0 && l <= 1; l += d * 0.005) {
       const x = fromOklch(l, o.c, o.h || 0);
       if (contrast(x, against) >= target) return x;

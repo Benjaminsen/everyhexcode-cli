@@ -67,10 +67,21 @@ export function groups(files, read = (f) => fs.readFileSync(f, 'utf8')) {
     if (/\.(css|scss|sass|less|pcss|postcss)$/i.test(f)) css.push({ file: f, text }); else other.push({ file: f, text });
   }
   const out = [];
-  if (css.length) {
+  // stylesheets are read together only when one uses a variable another defines (tokens.css and buttons.css): unrelated
+  // files stay apart, so a fix in one never comes from another's colours
+  const defs = css.map((c) => new Set([...c.text.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1])));
+  const uses = css.map((c) => new Set([...c.text.matchAll(/var\(\s*(--[\w-]+)/g)].map((m) => m[1])));
+  const parent = css.map((_, i) => i);
+  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  for (let i = 0; i < css.length; i++) for (let j = 0; j < css.length; j++) {
+    if (i !== j && [...uses[i]].some((v) => !defs[i].has(v) && defs[j].has(v))) parent[find(i)] = find(j);
+  }
+  const sets = new Map();
+  css.forEach((c, i) => { const r = find(i); sets.set(r, [...(sets.get(r) || []), c]); });
+  for (const list of sets.values()) {
     let text = '', parts = [];
-    for (const c of css) { parts.push({ file: c.file, start: text.length, end: text.length + c.text.length, text: c.text }); text += c.text + '\n'; }
-    out.push({ label: css.length === 1 ? css[0].file : `${css.length} stylesheets`, text, parts });
+    for (const c of list) { parts.push({ file: c.file, start: text.length, end: text.length + c.text.length, text: c.text }); text += c.text + '\n'; }
+    out.push({ label: list.length === 1 ? list[0].file : `${list.length} stylesheets that share variables`, text, parts });
   }
   for (const o of other) out.push({ label: o.file, text: o.text, parts: [{ file: o.file, start: 0, end: o.text.length, text: o.text }] });
   return out;

@@ -21,11 +21,11 @@ export const MAX_PAIRS = 400;
 
 // ---------------------------------------------------------------------------------------------------------------- roles
 
-const BG_WORDS = ['background', 'bg', 'surface', 'canvas', 'card', 'popover', 'paper', 'page', 'backdrop', 'layer', 'container', 'sheet', 'panel', 'well', 'sidebar', 'header', 'footer', 'nav', 'modal', 'dialog', 'menu', 'tooltip', 'overlay', 'fill'];
+const BG_WORDS = ['background', 'bg', 'surface', 'canvas', 'card', 'popover', 'paper', 'page', 'backdrop', 'layer', 'container', 'sheet', 'panel', 'well', 'sidebar', 'modal', 'dialog', 'overlay', 'fill', 'highlight', 'selection', 'hover', 'code'];
 const FG_WORDS = ['foreground', 'fg', 'text', 'ink', 'on', 'label', 'heading', 'title', 'copy', 'content', 'caption', 'placeholder', 'icon', 'font', 'type'];
 const BORDER_WORDS = ['border', 'outline', 'ring', 'divider', 'stroke', 'separator', 'input', 'focus', 'hairline', 'rule'];
-const ACCENT_WORDS = ['primary', 'secondary', 'tertiary', 'accent', 'brand', 'link', 'info', 'success', 'warning', 'warn', 'danger', 'error', 'destructive', 'positive', 'negative', 'critical', 'caution', 'notice', 'highlight', 'attention', 'neutral', 'muted', 'subtle'];
-const STATUS = ['info', 'success', 'warning', 'warn', 'danger', 'error', 'destructive', 'positive', 'negative', 'critical', 'caution', 'notice'];
+const ACCENT_WORDS = ['primary', 'secondary', 'tertiary', 'accent', 'brand', 'link', 'info', 'success', 'warning', 'warn', 'danger', 'error', 'err', 'destructive', 'positive', 'negative', 'critical', 'caution', 'notice', 'attention', 'neutral', 'muted', 'subtle', 'ok', 'alert'];
+const STATUS = ['info', 'success', 'warning', 'warn', 'danger', 'error', 'err', 'destructive', 'positive', 'negative', 'critical', 'caution', 'notice', 'ok', 'alert', 'invalid', 'valid'];
 // a utility class (Tailwind, Bootstrap) that sets one colour says nothing about where it is used: only rules that set
 // text and background together are taken from those
 const UTILITY = /^\.(?:[\w-]+\\:)*(?:text|bg|border|fill|stroke|from|via|to|ring|outline|decoration|placeholder|caret|accent|divide|shadow|link|btn-outline|bg-gradient)-[\w\\/.\[\]#-]+(?::[\w-]+)*$/;
@@ -34,7 +34,7 @@ const SCALE_STEP = /^(50|[1-9]00|950|[1-9]|1[0-2]|[1-9]0|a?[1-9]00)$/i;
 /** "--md-sys-color-on-primary-container" → ["on", "primary", "container"]; camelCase and dots split too. */
 export function words(name) {
   return String(name).replace(/^(--|\$|@)/, '').replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()
-    .split(/[-_./\s]+/).filter((w) => w && !['md', 'sys', 'ref', 'color', 'colors', 'colour', 'theme', 'tw', 'semantic', 'global', 'default', 'token', 'tokens', 'value', 'chakra', 'mantine', 'bs', 'ui', 'sl'].includes(w));
+    .replace(/([a-z])(\d)/g, '$1-$2').split(/[-_./\s]+/).filter((w) => w && !['md', 'sys', 'ref', 'color', 'colors', 'colour', 'theme', 'tw', 'semantic', 'global', 'default', 'token', 'tokens', 'value', 'chakra', 'mantine', 'bs', 'ui', 'sl'].includes(w));
 }
 
 /**
@@ -146,6 +146,9 @@ export function plan(read, opts = {}) {
   }
   // "muted" and "subtle" alone are a pale surface in some systems (shadcn's --muted) and grey text in others: the light
   // mode's lightness decides, and the role holds in every mode (dark --muted is still a surface)
+  // a colour another is named to sit on (muted under muted-foreground, primary under on-primary) is a surface
+  const surfaces = new Set(tokens.filter((t) => t.role === 'text' && t.on).map((t) => t.on));
+  for (const t of tokens) if (surfaces.has(words(t.name).join('-')) && t.why !== 'set by you' && (t.role === 'text' || t.role == null || (t.role === 'accent' && t.muted))) { t.role = 'bg'; t.why = 'has its own text color'; }
   const mutedRole = new Map();
   for (const t of [...tokens].sort((a, b) => (a.mode === 'light' ? -1 : 1) - (b.mode === 'light' ? -1 : 1))) {
     if (t.role !== 'accent' || !t.muted || t.why === 'set by you') continue;
@@ -155,8 +158,13 @@ export function plan(read, opts = {}) {
   // Bootstrap's --bs-body-color, --bs-secondary-color: "<x>-color" beside "<x>-bg" is the text colour on that background
   for (const t of tokens) {
     const m = String(t.name).match(/^(.*?)[-_]colou?r$/);
-    if (!m || t.why === 'set by you' || t.role === 'text') continue;
-    const bgTok = tokens.find((x) => x.mode === t.mode && (x.name === `${m[1]}-bg` || x.name === `${m[1]}-bg-color` || x.name === `${m[1]}-background`));
+    if (!m || t.why === 'set by you' || t.role === 'text' || /(^|[-_])(bg|background|border|outline|ring|shadow|fill)([-_]|$)/i.test(m[1])) continue;
+    // the nearest "<prefix>-bg" up the name: $dropdown-dark-link-color sits on $dropdown-dark-bg
+    let stem = m[1], bgTok = null;
+    while (stem && !bgTok) {
+      bgTok = tokens.find((x) => x.mode === t.mode && [`${stem}-bg`, `${stem}-bg-color`, `${stem}-background`, `${stem}_bg`].includes(x.name));
+      if (!bgTok) { const i = Math.max(stem.lastIndexOf('-'), stem.lastIndexOf('_')); stem = i > 0 ? stem.slice(0, i) : ''; }
+    }
     if (bgTok) { t.role = 'text'; t.on = words(bgTok.name).join('-'); t.why = `beside ${bgTok.name}`; }
   }
   // Tailwind v4's --color-background: var(--background) is the same colour under a second name: one of them is judged
@@ -179,7 +187,7 @@ export function plan(read, opts = {}) {
     if (asBg !== bg) extra = { ...extra, asBg: asBg.name };
     // the same colour on itself is never a design's pair (hidden text, a border that is the fill): only a pair you
     // declare is judged then
-    if (fg.hex === bg.hex && (fg.alpha ?? 1) === (bg.alpha ?? 1) && why !== 'declared by you') return;
+    if (fg.hex === bg.hex && (fg.alpha ?? 1) === (bg.alpha ?? 1) && (extra.guess || extra.selector)) return;
     const key = `${fg.id}>${bg.id}`;
     if (seen.has(key)) { const p = seen.get(key); if (p && rank(kind) > rank(p.kind)) Object.assign(p, { kind, why }); return; }
     const p = { key, fg, bg, kind, why, mode: fg.mode, ...extra };
@@ -189,13 +197,13 @@ export function plan(read, opts = {}) {
   const rank = (k) => ({ text: 3, large: 2, ui: 1, decor: 0 })[k] ?? 0;
   const pairsLater = [];
   const byName = new Map(tokens.map((t) => [`${t.name}|${t.mode}`, t]));
-  const canon = (t) => { let x = t, n = 0; while (x.via && n++ < 8) { const y = byName.get(`${x.via}|${x.mode}`) || byName.get(`${x.via}|light`); if (!y || y === x || y.role === 'ignore') break; x = y; } return x; };
+  const canon = (t) => { let x = t, n = 0; while (x.via && n++ < 8) { const y = byName.get(`${x.via}|${x.mode}`) || byName.get(`${x.via}|light`); if (!y || y === x || y.role === 'ignore' || isPalette(y)) break; x = y; } return x; };
 
   for (const mode of modes) {
     const all = tokens.filter((t) => t.mode === mode && t.role !== 'ignore');
     const named = new Map(all.map((t) => [words(t.name).join('-'), t]));
     // no roles to go on (a bare list, or a small set of raw colours such as a token file's core palette): lightness decides
-    const unnamed = all.every((t) => t.unnamed || t.role == null) || (all.length <= 12 && all.every((t) => t.role === 'scale' || t.role == null));
+    const unnamed = all.every((t) => t.unnamed || t.role == null) || (all.length <= 12 && all.every((t) => (t.role === 'scale' && !/\d$/.test(t.name)) || t.role == null));
     // a bare palette: roles by lightness (the lightest is the background, the darkest the text)
     if (unnamed && !read.rules?.length) {
       const by = [...all].sort((a, b) => L(b.hex) - L(a.hex));
@@ -207,7 +215,8 @@ export function plan(read, opts = {}) {
       }
     }
     const bgs = all.filter((t) => t.role === 'bg' && !t.accent);
-    const modeRules = (read.rules || []).filter((x) => (x.mode === mode || (mode === 'dark' && x.mode === 'light' && !x.scoped)));
+    // disabled controls are exempt from contrast (WCAG 1.4.3 and 1.4.11), so their rules are not judged
+    const modeRules = (read.rules || []).filter((x) => (x.mode === mode || (mode === 'dark' && x.mode === 'light' && !x.scoped)) && !DISABLED.test(x.selector));
     // the page's own background, when a stylesheet sets it on html, body or :root and no token names one
     const pageRule = [...modeRules].reverse().find((x) => PAGE_SEL.test(x.selector) && x.bg && !x.bg.image && x.bg.alpha !== 0);
     let main = bgs.length ? pickMain(bgs, mode) : null;
@@ -229,7 +238,8 @@ export function plan(read, opts = {}) {
       // a text colour alone is checked on the page background, unless the selector says it sits on something else
       if (!r.bg && r.fg && (ELSEWHERE.test(r.selector) || TEXT_UTILITY.test(r.selector))) continue;
       // a rule that sets only the text colour of a state (.button:hover) takes the background its base rule sets
-      const base = !r.bg ? modeRules.find((x) => x !== r && x.bg && !x.bg.image && baseSel(x.selector) === baseSel(r.selector)) : null;
+      const base = !r.bg ? (modeRules.find((x) => x !== r && x.bg && !x.bg.image && baseSel(x.selector) === baseSel(r.selector) && states(x.selector) === states(r.selector))
+        || modeRules.find((x) => x !== r && x.bg && !x.bg.image && baseSel(x.selector) === baseSel(r.selector) && !states(x.selector))) : null;
       const bg = r.bg && !r.bg.image ? tok(r.bg) : base ? tok(base.bg) : main;
       const large = r.fontSize ? isLarge(r.fontSize, r.fontWeight) : false;
       if (r.fg) add(tok(r.fg), bg, large ? 'large' : 'text', `${r.selector} sets ${r.bg ? 'color and background' : 'color'}`, { selector: r.selector, image: r.bg?.image, guess: !r.bg && !base });
@@ -244,7 +254,7 @@ export function plan(read, opts = {}) {
         // muted-foreground and secondary text are used on the page background too
         if (main && base !== main && (!base || /muted|subtle|secondary|surface|card|popover|background/.test(t.on))) add(t, main, 'text', `${t.name} on the page background`, { guess: !base });
       } else if (main) {
-        add(t, main, 'text', 'text on the page background');
+        add(t, main, 'text', 'text on the page background', { guess: true });
         if (bgs.length <= 6) for (const b of bgs) if (b !== main && !hasOwnText(b, texts)) add(t, b, 'text', `text on ${b.name}`);
       }
     }
@@ -254,7 +264,7 @@ export function plan(read, opts = {}) {
       const own = texts.find((x) => x.on && (named.get(x.on) === t || words(t.name).join('-') === x.on));
       // a filled colour with its own text colour: rule 2 covers it; a status colour is also used as text (error messages)
       if (own) { if (t.status) add(t, main, 'text', 'status colours are also text (error and warning messages)'); continue; }
-      add(t, main, words(t.name).includes('link') || t.status ? 'text' : 'ui', words(t.name).includes('link') ? 'links are text' : t.status ? 'status text and icons' : 'buttons, icons and accents on the background');
+      add(t, main, words(t.name).includes('link') || t.status ? 'text' : 'ui', words(t.name).includes('link') ? 'links are text' : t.status ? 'status text and icons' : 'buttons, icons and accents on the background', { guess: true });
       if (unnamed) for (const x of texts) add(x, t, 'text', 'text on an accent', { optional: true });
     }
     // 4. borders and controls: input borders and focus rings need 3:1, plain dividers are decoration
@@ -280,13 +290,19 @@ export function plan(read, opts = {}) {
     if (chart.length >= 2) groups.push({ id: `chart-${mode}`, label: 'Chart colors', mode, members: chart });
     if (accents.length >= 2 && !chart.length) groups.push({ id: `accents-${mode}`, label: 'Accent colors', mode, members: accents });
   }
-  return { tokens, pairs: pairs.slice(0, MAX_PAIRS), groups, modes, tooMany: pairs.length > MAX_PAIRS };
+  // colours with a name but no role and in no pair: listed, so nothing is skipped without saying so
+  const inPair = new Set(pairs.flatMap((p) => [p.fg.name, p.bg.name, p.asFg, p.asBg]));
+  const unchecked = [...new Set(tokens.filter((t) => !t.unnamed && !t.literal && !t.inherited && t.role !== 'ignore' && t.role !== 'scale' && !inPair.has(t.name) && !tokens.some((x) => x.via === t.name)).map((t) => t.name))];
+  return { tokens, pairs: pairs.slice(0, MAX_PAIRS), groups, modes, tooMany: pairs.length > MAX_PAIRS, unchecked };
 }
 
 // a text-colour utility somewhere in a selector (Tailwind's .hover\:text-red-500, .text-neutral-400\!, variants)
 const TEXT_UTILITY = /(^|[\s.:(*,>])\.?[\w\\:\[\]\.*-]*text-[\w\\/.!\[\]#-]+/;
 /** The first selector of a list, without its pseudo-classes: ".btn:hover, .btn:focus" → ".btn". */
 const baseSel = (sel) => String(sel).split(',')[0].trim().replace(/::?[\w-]+(\([^)]*\))?/g, '').trim();
+const DISABLED = /:disabled|\[disabled\]|\.disabled\b|aria-disabled=["']?true|is-disabled|--disabled/i;
+/** The interaction states a selector is for (:hover, :focus…; :link and :visited are the normal state). */
+const states = (sel) => [...new Set((String(sel).split(',')[0].match(/:(hover|focus-visible|focus-within|focus|active|checked|selected|current)\b/g) || []))].sort().join('');
 const PAGE_SEL = /^(html|body|:root)(\s*,\s*(html|body|:root))*$/i;
 const ELSEWHERE = /invers|revers|on-dark|on-light|knockout|\.dark\b|dark-mode|-dark\b|::selection|disabled/i;
 
@@ -307,7 +323,7 @@ function findTok(all, ref) {
 function synth(tokens, v, mode, selector) {
   // one token per colour, opacity and mode: #000 at 0% (transparent) is not #000
   let t = tokens.find((x) => x.literal && x.hex === v.hex && (x.alpha ?? 1) === (v.alpha ?? 1) && x.mode === mode);
-  if (!t) { t = { name: `#${v.hex}`, hex: v.hex, alpha: v.alpha, mode, id: tokens.length, role: 'literal', literal: true, raw: v.raw || null, span: v.span || null, format: v.format, where: selector }; tokens.push(t); }
+  if (!t) { t = { name: (v.alpha ?? 1) < 1 ? (v.raw || `#${v.hex}${Math.round(v.alpha * 255).toString(16).padStart(2, '0')}`) : `#${v.hex}`, hex: v.hex, alpha: v.alpha, mode, id: tokens.length, role: 'literal', literal: true, raw: v.raw || null, span: v.span || null, format: v.format, where: selector }; tokens.push(t); }
   return t;
 }
 
@@ -364,7 +380,7 @@ export function readability(fg, bg, apca) {
 export function collisions(groups) {
   const out = [];
   for (const g of groups) {
-    const m = g.members;
+    const m = g.members.slice(0, 24);
     for (let i = 0; i < m.length; i++) for (let j = i + 1; j < m.length; j++) {
       const a = m[i], b = m[j];
       const normal = dE(a.hex, b.hex);
@@ -470,45 +486,89 @@ function nearestL(hex, test) {
   return best && test(best.x) ? best.x : null;
 }
 
+// a design system's raw palette (gray-400, $yellow, color.base.blue): other tokens point to it, so it is never moved;
+// the token that points to it is re-pointed to another step of the same scale, or changed itself
+const COLOR_WORDS = /^(red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|gray|grey|slate|zinc|neutral|stone|white|black|brown|navy|maroon|olive|silver|gold|magenta|lavender|coral|beige)$/i;
+export const isPalette = (t) => t.role === 'scale' || !!t.primitive || COLOR_WORDS.test(words(t.name).at(-1) || '');
+
 /**
  * Fix a whole palette: each round moves the one colour whose nearest passing lightness fixes the most failing pairs for
- * the smallest visible change (ΔE-OK, weighted so text moves before backgrounds and brand colours last), without breaking a
- * pair that passes. Locked names never move. Returns the changes and what still fails.
+ * the smallest visible change (ΔE-OK, weighted so text moves before backgrounds and brand colours last). A move never
+ * breaks a pair that passes, in either mode (a light value a dark mode inherits moves with its copy), never turns a pair
+ * around (dark text stays darker than its background), and lands a margin past the line. Locked names and raw palette
+ * steps never move; a token that points to a palette step is re-pointed to a step that passes when the scale has one.
  */
-export function solve(planned, target = 'AA', lock = []) {
+export function solve(planned, target = 'AA', lock = [], opts = {}) {
+  const margin = opts.margin ?? 0.1;
   const value = new Map(planned.tokens.map((t) => [t.id, t.hex]));
   const locked = new Set(lock.map(String));
   const pairs = planned.pairs.filter((p) => p.kind !== 'decor' && !p.optional && !p.image);
-  const ok = (p, v = value) => {
-    const bg = p.bg.alpha < 1 ? over(v.get(p.bg.id), p.bg.alpha, p.mode === 'dark' ? '000000' : 'ffffff') : v.get(p.bg.id);
-    return contrast(over(v.get(p.fg.id), p.fg.alpha, bg), bg) >= needOf(p.kind, target);
-  };
-  const moved = new Map();
+  const shownBg = (p, v) => (p.bg.alpha < 1 ? over(v.get(p.bg.id), p.bg.alpha, p.mode === 'dark' ? '000000' : 'ffffff') : v.get(p.bg.id));
+  const ratioOf = (p, v = value) => { const bg = shownBg(p, v); return wcagContrast(col(over(v.get(p.fg.id), p.fg.alpha, bg)), col(bg)); };
+  const ok = (p, v = value, extra = 0) => { const r = ratioOf(p, v); return r >= needOf(p.kind, target) + extra && contrast(over(v.get(p.fg.id), p.fg.alpha, shownBg(p, v)), shownBg(p, v)) >= needOf(p.kind, target); };
+  // which way round each pair is now (text lighter or darker than its background): a fix keeps it so
+  const lum = (h) => wcagLuminance(col(h));
+  const side = new Map(pairs.map((p) => [p, Math.sign(lum(value.get(p.fg.id)) - lum(value.get(p.bg.id)))]));
+  const sameSide = (p) => { const sg = side.get(p); return !sg || Math.sign(lum(value.get(p.fg.id)) - lum(value.get(p.bg.id))) === sg; };
   const byId = new Map(planned.tokens.map((t) => [t.id, t]));
+  // a light value that dark mode inherits is one value: the copies move with it
+  const copies = new Map();
+  for (const t of planned.tokens) if (t.inherited) { const src = planned.tokens.find((x) => x.name === t.name && x.mode === 'light' && !x.inherited); if (src) copies.set(src.id, [...(copies.get(src.id) || []), t.id]); }
+  const ids = (t) => [t.id, ...(copies.get(t.id) || [])];
+  const setAll = (t, x) => { for (const i of ids(t)) value.set(i, x); };
+  const siblings = (t) => {
+    const src = t.via && planned.tokens.find((x) => x.name === t.via && x.mode === t.mode) || planned.tokens.find((x) => x.name === t.via);
+    if (!src || !isPalette(src)) return null;
+    const stem = src.name.replace(/[-_.]?\d+$/, '');
+    if (stem === src.name) return null;
+    return planned.tokens.filter((x) => x !== src && x.mode === src.mode && x.name !== src.name && x.name.replace(/[-_.]?\d+$/, '') === stem && /\d+$/.test(x.name)).map((x) => ({ x, src }));
+  };
+  const movable = (t) => !t.inherited && !locked.has(t.name) && !locked.has(t.hex) && !locked.has('#' + t.hex) && !(isPalette(t) && planned.tokens.some((x) => x.via === t.name));
+  const moved = new Map(), repoint = new Map();
   for (let round = 0; round < 60; round++) {
     const failing = pairs.filter((p) => !ok(p));
     if (!failing.length) break;
     let best = null;
     const cands = new Map();
-    for (const p of failing.slice(0, 40)) for (const t of [p.fg, p.bg]) { const tk = byId.get(t.id) || t; if (!tk.inherited && !locked.has(tk.name) && !locked.has(tk.hex) && !locked.has('#' + tk.hex)) cands.set(tk.id, tk); }
+    for (const p of failing.slice(0, 40)) for (const t of [p.fg, p.bg]) { const tk = byId.get(t.id) || t; if (movable(tk)) cands.set(tk.id, tk); }
     for (const t of cands.values()) {
-      const mine = pairs.filter((p) => p.fg.id === t.id || p.bg.id === t.id);
+      const all = ids(t);
+      const mine = pairs.filter((p) => all.includes(p.fg.id) || all.includes(p.bg.id));
       const prev = value.get(t.id);
-      const to = nearestL(prev, (x) => { value.set(t.id, x); const r = mine.every((p) => ok(p)); value.set(t.id, prev); return r; });
+      const test = (x) => { setAll(t, x); const r = mine.every((p) => ok(p, value, failing.includes(p) ? margin : 0) && sameSide(p)); setAll(t, prev); return r; };
+      // a step of the same scale first (re-pointing keeps the design system whole), else the nearest lightness
+      let to = null, via = null;
+      const sib = siblings(t);
+      if (sib) { const hit = sib.filter(({ x }) => test(x.hex)).sort((a, b2) => dE(prev, a.x.hex) - dE(prev, b2.x.hex))[0]; if (hit) { to = hit.x.hex; via = { from: hit.src.name, to: hit.x.name }; } }
+      if (!to) to = nearestL(prev, test);
       if (!to) continue;
-      const fixes = failing.filter((p) => p.fg.id === t.id || p.bg.id === t.id).length;
-      const cost = (dE(value.get(t.id), to) * (WEIGHT[t.role] || 1.5)) / fixes;
-      if (!best || cost < best.cost) best = { t, to, cost };
+      const fixes = failing.filter((p) => all.includes(p.fg.id) || all.includes(p.bg.id)).length;
+      const cost = (dE(prev, to) * (WEIGHT[t.role] || 1.5) * (via ? 0.8 : 1)) / fixes;
+      if (!best || cost < best.cost) best = { t, to, cost, via };
     }
     if (!best) break;
-    value.set(best.t.id, best.to);
+    setAll(best.t, best.to);
     moved.set(best.t.id, best.t);
+    if (best.via) repoint.set(best.t.id, best.via); else repoint.delete(best.t.id);
   }
-  const changes = [...moved.values()].map((t) => ({ name: t.name, mode: t.mode, role: t.role, from: t.hex, to: value.get(t.id), deltaE: dE(t.hex, value.get(t.id)), span: t.span, raw: t.raw, format: t.format, alpha: t.alpha }))
+  const changes = [...moved.values()].map((t) => ({ name: t.name, mode: t.mode, role: t.role, from: t.hex, to: value.get(t.id), deltaE: dE(t.hex, value.get(t.id)), span: t.span, raw: t.raw, format: t.format, alpha: t.alpha,
+    ...(repoint.get(t.id) ? { repoint: repoint.get(t.id) } : {}), ...(copies.get(t.id) ? { alsoDark: true } : {}) }))
     .filter((c) => c.from !== c.to);
-  const remaining = pairs.filter((p) => !ok(p)).map((p) => ({ fg: p.fg.name, bg: p.bg.name, mode: p.mode, kind: p.kind,
-    // what one side alone would need, ignoring the other pairs
-    suggest: { fg: nearestL(value.get(p.fg.id), (x) => ok(p, new Map(value).set(p.fg.id, x))), bg: nearestL(value.get(p.bg.id), (x) => ok(p, new Map(value).set(p.bg.id, x))) } })).slice(0, 60);
+  const why = (p) => {
+    const f = byId.get(p.fg.id), b = byId.get(p.bg.id);
+    const stuck = [f, b].filter((t) => !movable(t));
+    if (stuck.length === 2) return `${stuck.map((t) => t.name).join(' and ')} cannot change (${stuck.map((t) => (locked.has(t.name) || locked.has('#' + t.hex) ? 'locked' : t.inherited ? 'inherited from light mode' : 'a palette step other tokens use')).join(', ')})`;
+    const lockedOne = [f, b].find((t) => locked.has(t.name) || locked.has('#' + t.hex));
+    if (lockedOne) return `${lockedOne.name} is locked, and the other color cannot move far enough without turning the pair around`;
+    const shared = [f, b].find((t) => copies.get(t.id) || (t.inherited));
+    if (shared) return `${shared.name} is the same value in light and dark mode, and no single value passes on both backgrounds: give it its own dark value`;
+    return 'no single color can move without breaking another pair or turning the pair around';
+  };
+  const remaining = pairs.filter((p) => !ok(p)).map((p) => {
+    const keep = (id, x) => { const v = new Map(value).set(id, x); return ok(p, v, margin) && Math.sign(lum(v.get(p.fg.id)) - lum(v.get(p.bg.id))) === side.get(p); };
+    return { fg: p.fg.name, bg: p.bg.name, mode: p.mode, kind: p.kind, reason: why(p),
+      suggest: { fg: movable(byId.get(p.fg.id)) ? nearestL(value.get(p.fg.id), (x) => keep(p.fg.id, x)) : null, bg: movable(byId.get(p.bg.id)) ? nearestL(value.get(p.bg.id), (x) => keep(p.bg.id, x)) : null } };
+  }).slice(0, 60);
   return { target, changes, remaining, values: value };
 }
 
@@ -535,7 +595,7 @@ export function writeLike(hex, raw, format, alpha = 1) {
 
 /** The fixed text, and a unified diff of the lines that changed. */
 export function applyFix(text, changes, label = 'colors') {
-  const edits = changes.filter((c) => c.span).map((c) => ({ ...c, out: writeLike(c.to, c.raw, c.format, c.alpha) })).sort((a, b) => b.span[0] - a.span[0]);
+  const edits = changes.filter((c) => c.span).map((c) => ({ ...c, out: c.repoint && c.raw && c.raw.includes(c.repoint.from) ? c.raw.replace(c.repoint.from, c.repoint.to) : writeLike(c.to, c.raw, c.format, c.alpha) })).sort((a, b) => b.span[0] - a.span[0]);
   let out = text;
   for (const e of edits) out = out.slice(0, e.span[0]) + e.out + out.slice(e.span[1]);
   const A = text.split('\n'), B = out.split('\n');
@@ -570,7 +630,7 @@ export function check(input, opts = {}) {
   const planned = plan(read, opts);
   const judged = planned.pairs.map((p) => judge(p, target, opts.apca));
   const clash = collisions(planned.groups);
-  const fix = solve(planned, target, opts.lock || []);
+  const fix = solve(planned, target, opts.lock || [], { margin: opts.margin });
   const applied = applyFix(text, fix.changes, opts.label);
   const byMode = {};
   for (const m of planned.modes) byMode[m] = feel(planned.tokens.filter((t) => t.mode === m && t.role !== 'ignore').map((t) => t.hex));
@@ -581,7 +641,8 @@ export function check(input, opts = {}) {
     target, standard: TARGETS[target].label,
     tokens: planned.tokens.filter((t) => !t.literal || judged.some((p) => p.fg.name === t.name || p.bg.name === t.name)).map((t) => ({ name: t.name, hex: t.hex, alpha: t.alpha ?? 1, mode: t.mode, role: t.role || 'other', why: t.why || null, at: t.span ? t.span[0] : null, ...(t.where ? { where: t.where } : {}), ...(t.inherited ? { inherited: true } : {}) })),
     pairs: judged,
-    collisions: clash,
+    collisions: clash.slice(0, 60),
+    unchecked: planned.unchecked,
     feel: byMode,
     fix: { changes: fix.changes.map((c) => ({ ...c, span: c.span || null, raw: c.raw ?? null })), remaining: fix.remaining, text: fix.changes.length ? applied.text : null, diff: applied.diff, unwritten: applied.unwritten },
   };
@@ -596,7 +657,7 @@ export function summarize(r) {
   const pass = judged.length - fail.length;
   const lines = [];
   if (!r.input.colors) return { pass: 0, fail: 0, total: 0, issues: 0, text: r.input.rules ? `${r.input.rules} CSS rules read, but none sets a color that can be paired (colors set by scripts or images are not seen).` : 'No colors found. Paste hex codes, CSS, Tailwind config or design tokens.', lines: [] };
-  if (!judged.length) lines.push(`${r.input.colors} colors read, but no pairs to judge: tell the checker which colors are text and which are backgrounds.`);
+  if (!judged.length) lines.push(`${r.input.colors} ${r.input.colors === 1 ? 'color' : 'colors'} read, but no pairs to judge: tell the checker which colors are text and which are backgrounds.`);
   else lines.push(`${judged.length} ${judged.length === 1 ? 'pair' : 'pairs'} checked against ${r.standard}: ${pass} pass, ${fail.length} fail.`);
   if (fail.length) {
     const kinds = {};
@@ -610,8 +671,10 @@ export function summarize(r) {
   if (r.fix.remaining.length) lines.push(`${r.fix.remaining.length} ${r.fix.remaining.length === 1 ? 'pair needs' : 'pairs need'} both colors to move; see the suggestions.`);
   const cvd = r.pairs.filter((p) => p.pass && p.vision && p.vision.ratio < p.need);
   if (cvd.length) lines.push(`${cvd.length} passing ${cvd.length === 1 ? 'pair drops' : 'pairs drop'} below ${r.standard} for some color vision (${[...new Set(cvd.map((p) => p.vision.label))].join(', ')}).`);
-  const same = r.collisions.filter((c) => c.normal >= 10 && c.common);
-  if (same.length) lines.push(`${same.length} ${same.length === 1 ? 'pair' : 'pairs'} of ${same[0].group.toLowerCase()} look alike with color-blindness: don't let color alone tell them apart.`);
+  const same = r.collisions.filter((c) => c.normal >= 10 && c.common), rare = r.collisions.filter((c) => c.normal >= 10 && !c.common);
+  if (same.length) lines.push(`${same.length} ${same.length === 1 ? 'pair' : 'pairs'} of ${same[0].group.toLowerCase()} look alike with red-green color blindness${rare.length ? ` (${rare.length} more only with rarer types)` : ''}: don't let color alone tell them apart.`);
+  else if (rare.length) lines.push(`${rare.length} ${rare.length === 1 ? 'pair looks' : 'pairs look'} alike only with rarer color blindness (${[...new Set(rare.map((c) => c.worst.label))].join(', ')}).`);
+  if (r.unchecked?.length) lines.push(`${r.unchecked.length} ${r.unchecked.length === 1 ? 'color has' : 'colors have'} no role and ${r.unchecked.length === 1 ? 'was' : 'were'} not checked: ${r.unchecked.slice(0, 6).join(', ')}${r.unchecked.length > 6 ? ', …' : ''}. Give ${r.unchecked.length === 1 ? 'it' : 'them'} a role to check ${r.unchecked.length === 1 ? 'it' : 'them'}.`);
   const narrow = judged.filter((p) => p.pass && p.kind === 'text' && p.ratio < 5);
   if (narrow.length) lines.push(`${narrow.length} text ${narrow.length === 1 ? 'pair passes' : 'pairs pass'} by less than 0.5; glare and low vision will lose ${narrow.length === 1 ? 'it' : 'them'}.`);
   return { pass, fail: fail.length, total: judged.length, issues: fail.length + same.length, text: lines.join(' '), lines };

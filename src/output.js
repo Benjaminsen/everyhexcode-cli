@@ -17,7 +17,8 @@ export function whereOf(group, report, pair) {
 }
 
 export const failing = (r) => r.pairs.filter((p) => !p.pass && p.kind !== 'decor' && !p.optional);
-export const lookAlike = (r) => r.collisions.filter((c) => c.common);
+// look-alike pairs once, whichever modes they occur in
+export const lookAlike = (r) => r.collisions.filter((c) => c.common).filter((c, i, l) => l.findIndex((x) => x.a.name === c.a.name && x.b.name === c.b.name) === i);
 const link = (r) => `${SITE}/color-checker`;
 const fixOf = (r, p) => r.fix.changes.filter((c) => c.mode === p.mode && (c.name === p.fg.name || c.name === p.bg.name)).map((c) => `${c.name} → #${c.to}`).filter((x, i, l) => l.indexOf(x) === i).join(', ');
 

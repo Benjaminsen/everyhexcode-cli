@@ -29,6 +29,7 @@ Options
   --verbose              list passing pairs too
   --chrome <path>        Chrome or Chromium to use for scan (default: CHROME_PATH or the usual install)
   --width <px>           viewport width for scan (default 1280)
+  --timeout <s>          give up on a page that stops answering after this long (default 150), keeping what was read
 
 Settings file (colorcheck.json)
   { "files": ["src/styles"], "target": "AA", "lock": ["--brand"], "roles": { "--muted": "bg" },
@@ -107,12 +108,13 @@ async function main() {
     const url = a._[0] || cfg.url;
     if (!url) { console.error('Give a URL: everyhexcode scan http://localhost:3000'); return 2; }
     const modes = a.dark ? ['dark'] : a.light ? ['light'] : ['light', 'dark'];
-    const s = await renderScan(url, { chrome: a.chrome, width: Number(a.width) || 1280, modes, log: (m) => process.stderr.write(m + '\n') });
+    const s = await renderScan(url, { chrome: a.chrome, width: Number(a.width) || 1280, timeout: Number(a.timeout) || 150, modes, log: (m) => process.stderr.write(m + '\n') });
     const report = check(s.css, { ...opts, label: 'rendered' });
     report.input.kind = 'rendered page';
     const group = { label: `${s.url} (rendered)`, text: s.css, parts: [{ file: s.url, start: 0, end: s.css.length, text: s.css }] };
     emit([{ group, report }], a, VERSION);
-    if ((a.format || 'text') === 'text') process.stderr.write(`Read ${s.elements} text elements (${s.images} over images or gradients) in ${modes.join(' and ')} mode.\n`);
+    if ((a.format || 'text') === 'text') process.stderr.write(`Read ${s.elements} text elements (${s.images} over images or gradients) in ${modes.join(' and ')} mode.\n${s.notes.map((n) => `Note: ${n}\n`).join('')}`);
+    report.input.warnings.push(...s.notes);
     return exitCode([{ report }], failOn);
   }
 

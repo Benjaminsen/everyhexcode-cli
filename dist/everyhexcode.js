@@ -2981,6 +2981,7 @@ function readCss(text2) {
       val = val.slice(0, -imp[0].length);
       ve -= imp[0].length;
     }
+    if (stack.some((p) => /^@media\b[^{]*\bprint\b/i.test(p) && !/screen/i.test(p))) return;
     decls.push({ prop: m[1], value: val, span: [vs, ve], depth: stack.length, prelude: stack[stack.length - 1] || "", global: stack.every(isGlobalScope), mode: mode(), scoped: stack.some((p) => LIGHT_SEL.test(p)), block: blockId });
   };
   let blockId = 0, blockSeq = 0;
@@ -3295,12 +3296,61 @@ function jsonLeaves(text2) {
 }
 var MODE_WORD = /^(light|dark|day|night|lightmode|darkmode|light-mode|dark-mode)$/i;
 var modeOfWord = (w) => /dark|night/i.test(w) ? "dark" : "light";
+function json5(text2) {
+  let out = "", i = 0;
+  while (i < text2.length) {
+    const c2 = text2[i];
+    if (c2 === '"' || c2 === "'") {
+      let j = i + 1, str = "";
+      while (j < text2.length && text2[j] !== c2) {
+        if (text2[j] === "\\") {
+          str += text2[j] + text2[j + 1];
+          j += 2;
+          continue;
+        }
+        str += text2[j] === '"' ? '\\"' : text2[j];
+        j++;
+      }
+      out += '"' + str + '"';
+      i = j + 1;
+      continue;
+    }
+    if (c2 === "/" && text2[i + 1] === "/") {
+      while (i < text2.length && text2[i] !== "\n") i++;
+      continue;
+    }
+    if (c2 === "/" && text2[i + 1] === "*") {
+      const e3 = text2.indexOf("*/", i + 2);
+      i = e3 < 0 ? text2.length : e3 + 2;
+      continue;
+    }
+    if (/[A-Za-z_$]/.test(c2) && /[{,]\s*$/.test(out)) {
+      const m = /^[A-Za-z_$][\w$-]*/.exec(text2.slice(i));
+      const after = text2.slice(i + m[0].length).match(/^\s*:/);
+      if (after) {
+        out += '"' + m[0] + '"';
+        i += m[0].length;
+        continue;
+      }
+    }
+    out += c2;
+    i++;
+  }
+  return out.replace(/,(\s*[}\]])/g, "$1");
+}
 function readJson(text2) {
-  let data;
+  let data, converted = false;
   try {
     data = JSON.parse(text2);
   } catch {
-    return null;
+    try {
+      const plain = json5(text2);
+      data = JSON.parse(plain);
+      text2 = plain;
+      converted = true;
+    } catch {
+      return null;
+    }
   }
   const tokens = [];
   const figma = data?.meta?.variables ? Object.values(data.meta.variables) : Array.isArray(data?.variables) ? data.variables : null;
@@ -3380,6 +3430,7 @@ function readJson(text2) {
     while (x && !x.hex && x.alias && n++ < 8) x = byName.get(`${x.alias}|${t.mode}`) || byName.get(`${x.alias}|light`);
     if (x?.hex && x !== t) Object.assign(t, { hex: x.hex, alpha: x.alpha, via: x.name });
   }
+  if (converted) for (const t of tokens) t.span = null;
   return { kind: dtcg ? "dtcg" : sd ? "style-dictionary" : "json", tokens: tokens.filter((t) => t.hex) };
 }
 function readTailwind(text2) {
@@ -3431,6 +3482,11 @@ function readList(text2) {
     const before = text2.slice(lineStart, m.index);
     const nm = before.match(/([A-Za-z][\w .\-/]{0,50}?)\s*[:=]\s*$/);
     add(m[0], m.index, nm ? nm[1] : null);
+  }
+  if (found) {
+    const taken = tokens.map((t) => t.span);
+    const re = /(?<![\w#(-])([a-z]+)(?![\w(-])/gi;
+    while (m = re.exec(text2)) if (CSS_NAMES.has(m[1].toLowerCase()) && !taken.some(([a, b]) => m.index >= a && m.index < b) && !/[:=]\s*$/.test(text2.slice(text2.lastIndexOf("\n", m.index) + 1, m.index)) && !/[:=]/.test(text2.slice(m.index + m[1].length, text2.indexOf("\n", m.index) < 0 ? void 0 : text2.indexOf("\n", m.index)))) add(m[1], m.index, null);
   }
   if (!found) {
     const re = /[^\s,;|]+/g;
@@ -3485,15 +3541,15 @@ var fromOklch = (l, c2, h) => formatHex(toSrgb2({ mode: "oklch", l: Math.max(0, 
 var dE = (a, b) => r12(okDist2(col2(a), col2(b)) * 100, 1);
 var VERSION = "1.0.0";
 var MAX_PAIRS = 400;
-var BG_WORDS = ["background", "bg", "surface", "canvas", "card", "popover", "paper", "page", "backdrop", "layer", "container", "sheet", "panel", "well", "sidebar", "header", "footer", "nav", "modal", "dialog", "menu", "tooltip", "overlay", "fill"];
+var BG_WORDS = ["background", "bg", "surface", "canvas", "card", "popover", "paper", "page", "backdrop", "layer", "container", "sheet", "panel", "well", "sidebar", "modal", "dialog", "overlay", "fill", "highlight", "selection", "hover", "code"];
 var FG_WORDS = ["foreground", "fg", "text", "ink", "on", "label", "heading", "title", "copy", "content", "caption", "placeholder", "icon", "font", "type"];
 var BORDER_WORDS = ["border", "outline", "ring", "divider", "stroke", "separator", "input", "focus", "hairline", "rule"];
-var ACCENT_WORDS = ["primary", "secondary", "tertiary", "accent", "brand", "link", "info", "success", "warning", "warn", "danger", "error", "destructive", "positive", "negative", "critical", "caution", "notice", "highlight", "attention", "neutral", "muted", "subtle"];
-var STATUS = ["info", "success", "warning", "warn", "danger", "error", "destructive", "positive", "negative", "critical", "caution", "notice"];
+var ACCENT_WORDS = ["primary", "secondary", "tertiary", "accent", "brand", "link", "info", "success", "warning", "warn", "danger", "error", "err", "destructive", "positive", "negative", "critical", "caution", "notice", "attention", "neutral", "muted", "subtle", "ok", "alert"];
+var STATUS = ["info", "success", "warning", "warn", "danger", "error", "err", "destructive", "positive", "negative", "critical", "caution", "notice", "ok", "alert", "invalid", "valid"];
 var UTILITY = /^\.(?:[\w-]+\\:)*(?:text|bg|border|fill|stroke|from|via|to|ring|outline|decoration|placeholder|caret|accent|divide|shadow|link|btn-outline|bg-gradient)-[\w\\/.\[\]#-]+(?::[\w-]+)*$/;
 var SCALE_STEP = /^(50|[1-9]00|950|[1-9]|1[0-2]|[1-9]0|a?[1-9]00)$/i;
 function words(name) {
-  return String(name).replace(/^(--|\$|@)/, "").replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase().split(/[-_./\s]+/).filter((w) => w && !["md", "sys", "ref", "color", "colors", "colour", "theme", "tw", "semantic", "global", "default", "token", "tokens", "value", "chakra", "mantine", "bs", "ui", "sl"].includes(w));
+  return String(name).replace(/^(--|\$|@)/, "").replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase().replace(/([a-z])(\d)/g, "$1-$2").split(/[-_./\s]+/).filter((w) => w && !["md", "sys", "ref", "color", "colors", "colour", "theme", "tw", "semantic", "global", "default", "token", "tokens", "value", "chakra", "mantine", "bs", "ui", "sl"].includes(w));
 }
 var PRIMITIVE = /(^|[.\-_/])(base|primitives?|palette|core|ref|ramps?|scales?|raw|swatch(es)?)[.\-_/]./i;
 function roleOf(name) {
@@ -3570,6 +3626,11 @@ function plan(read, opts = {}) {
       Object.assign(t, { role: r2 === "ignore" ? "ignore" : r2, why: "set by you", on: void 0, sub: void 0 });
     }
   }
+  const surfaces = new Set(tokens.filter((t) => t.role === "text" && t.on).map((t) => t.on));
+  for (const t of tokens) if (surfaces.has(words(t.name).join("-")) && t.why !== "set by you" && (t.role === "text" || t.role == null || t.role === "accent" && t.muted)) {
+    t.role = "bg";
+    t.why = "has its own text color";
+  }
   const mutedRole = /* @__PURE__ */ new Map();
   for (const t of [...tokens].sort((a, b) => (a.mode === "light" ? -1 : 1) - (b.mode === "light" ? -1 : 1))) {
     if (t.role !== "accent" || !t.muted || t.why === "set by you") continue;
@@ -3579,8 +3640,15 @@ function plan(read, opts = {}) {
   }
   for (const t of tokens) {
     const m = String(t.name).match(/^(.*?)[-_]colou?r$/);
-    if (!m || t.why === "set by you" || t.role === "text") continue;
-    const bgTok = tokens.find((x) => x.mode === t.mode && (x.name === `${m[1]}-bg` || x.name === `${m[1]}-bg-color` || x.name === `${m[1]}-background`));
+    if (!m || t.why === "set by you" || t.role === "text" || /(^|[-_])(bg|background|border|outline|ring|shadow|fill)([-_]|$)/i.test(m[1])) continue;
+    let stem = m[1], bgTok = null;
+    while (stem && !bgTok) {
+      bgTok = tokens.find((x) => x.mode === t.mode && [`${stem}-bg`, `${stem}-bg-color`, `${stem}-background`, `${stem}_bg`].includes(x.name));
+      if (!bgTok) {
+        const i = Math.max(stem.lastIndexOf("-"), stem.lastIndexOf("_"));
+        stem = i > 0 ? stem.slice(0, i) : "";
+      }
+    }
     if (bgTok) {
       t.role = "text";
       t.on = words(bgTok.name).join("-");
@@ -3606,7 +3674,7 @@ function plan(read, opts = {}) {
     if (fg === bg) return;
     if (asFg !== fg) extra = { ...extra, asFg: asFg.name };
     if (asBg !== bg) extra = { ...extra, asBg: asBg.name };
-    if (fg.hex === bg.hex && (fg.alpha ?? 1) === (bg.alpha ?? 1) && why !== "declared by you") return;
+    if (fg.hex === bg.hex && (fg.alpha ?? 1) === (bg.alpha ?? 1) && (extra.guess || extra.selector)) return;
     const key2 = `${fg.id}>${bg.id}`;
     if (seen.has(key2)) {
       const p2 = seen.get(key2);
@@ -3624,7 +3692,7 @@ function plan(read, opts = {}) {
     let x = t, n = 0;
     while (x.via && n++ < 8) {
       const y = byName.get(`${x.via}|${x.mode}`) || byName.get(`${x.via}|light`);
-      if (!y || y === x || y.role === "ignore") break;
+      if (!y || y === x || y.role === "ignore" || isPalette(y)) break;
       x = y;
     }
     return x;
@@ -3632,7 +3700,7 @@ function plan(read, opts = {}) {
   for (const mode of modes2) {
     const all = tokens.filter((t) => t.mode === mode && t.role !== "ignore");
     const named2 = new Map(all.map((t) => [words(t.name).join("-"), t]));
-    const unnamed = all.every((t) => t.unnamed || t.role == null) || all.length <= 12 && all.every((t) => t.role === "scale" || t.role == null);
+    const unnamed = all.every((t) => t.unnamed || t.role == null) || all.length <= 12 && all.every((t) => t.role === "scale" && !/\d$/.test(t.name) || t.role == null);
     if (unnamed && !read.rules?.length) {
       const by = [...all].sort((a, b) => L(b.hex) - L(a.hex));
       const light = by[0], dark = by[by.length - 1];
@@ -3643,7 +3711,7 @@ function plan(read, opts = {}) {
       }
     }
     const bgs = all.filter((t) => t.role === "bg" && !t.accent);
-    const modeRules = (read.rules || []).filter((x) => x.mode === mode || mode === "dark" && x.mode === "light" && !x.scoped);
+    const modeRules = (read.rules || []).filter((x) => (x.mode === mode || mode === "dark" && x.mode === "light" && !x.scoped) && !DISABLED.test(x.selector));
     const pageRule = [...modeRules].reverse().find((x) => PAGE_SEL.test(x.selector) && x.bg && !x.bg.image && x.bg.alpha !== 0);
     let main2 = bgs.length ? pickMain(bgs, mode) : null;
     if (!main2 && pageRule) main2 = pageRule.bg.token ? all.find((t) => t.name === pageRule.bg.token) : synth(tokens, pageRule.bg, mode, pageRule.selector);
@@ -3664,7 +3732,7 @@ function plan(read, opts = {}) {
     for (const r2 of modeRules.filter((x) => !(UTILITY.test(x.selector) && !(x.fg && x.bg)) && !(mode === "dark" && x.mode === "light" && ![x.fg, x.bg, x.border, x.outline].some((v) => v?.token)))) {
       const tok = (v) => v && !v.image ? all.find((t) => t.name === v.token) || synth(tokens, v, mode, r2.selector) : null;
       if (!r2.bg && r2.fg && (ELSEWHERE.test(r2.selector) || TEXT_UTILITY.test(r2.selector))) continue;
-      const base = !r2.bg ? modeRules.find((x) => x !== r2 && x.bg && !x.bg.image && baseSel(x.selector) === baseSel(r2.selector)) : null;
+      const base = !r2.bg ? modeRules.find((x) => x !== r2 && x.bg && !x.bg.image && baseSel(x.selector) === baseSel(r2.selector) && states(x.selector) === states(r2.selector)) || modeRules.find((x) => x !== r2 && x.bg && !x.bg.image && baseSel(x.selector) === baseSel(r2.selector) && !states(x.selector)) : null;
       const bg = r2.bg && !r2.bg.image ? tok(r2.bg) : base ? tok(base.bg) : main2;
       const large = r2.fontSize ? isLarge(r2.fontSize, r2.fontWeight) : false;
       if (r2.fg) add(tok(r2.fg), bg, large ? "large" : "text", `${r2.selector} sets ${r2.bg ? "color and background" : "color"}`, { selector: r2.selector, image: r2.bg?.image, guess: !r2.bg && !base });
@@ -3676,7 +3744,7 @@ function plan(read, opts = {}) {
         if (base && base !== t) add(t, base, "text", `${t.name} is named for ${base.name}`);
         if (main2 && base !== main2 && (!base || /muted|subtle|secondary|surface|card|popover|background/.test(t.on))) add(t, main2, "text", `${t.name} on the page background`, { guess: !base });
       } else if (main2) {
-        add(t, main2, "text", "text on the page background");
+        add(t, main2, "text", "text on the page background", { guess: true });
         if (bgs.length <= 6) {
           for (const b of bgs) if (b !== main2 && !hasOwnText(b, texts)) add(t, b, "text", `text on ${b.name}`);
         }
@@ -3689,7 +3757,7 @@ function plan(read, opts = {}) {
         if (t.status) add(t, main2, "text", "status colours are also text (error and warning messages)");
         continue;
       }
-      add(t, main2, words(t.name).includes("link") || t.status ? "text" : "ui", words(t.name).includes("link") ? "links are text" : t.status ? "status text and icons" : "buttons, icons and accents on the background");
+      add(t, main2, words(t.name).includes("link") || t.status ? "text" : "ui", words(t.name).includes("link") ? "links are text" : t.status ? "status text and icons" : "buttons, icons and accents on the background", { guess: true });
       if (unnamed) for (const x of texts) add(x, t, "text", "text on an accent", { optional: true });
     }
     for (const t of all.filter((x) => x.role === "border" || x.role === "control")) if (main2) add(t, main2, t.role === "control" ? "ui" : "decor", t.role === "control" ? "input borders and focus rings (WCAG 1.4.11)" : "dividers and card edges (decoration)");
@@ -3712,10 +3780,14 @@ function plan(read, opts = {}) {
     if (chart.length >= 2) groups2.push({ id: `chart-${mode}`, label: "Chart colors", mode, members: chart });
     if (accents.length >= 2 && !chart.length) groups2.push({ id: `accents-${mode}`, label: "Accent colors", mode, members: accents });
   }
-  return { tokens, pairs: pairs.slice(0, MAX_PAIRS), groups: groups2, modes: modes2, tooMany: pairs.length > MAX_PAIRS };
+  const inPair = new Set(pairs.flatMap((p) => [p.fg.name, p.bg.name, p.asFg, p.asBg]));
+  const unchecked = [...new Set(tokens.filter((t) => !t.unnamed && !t.literal && !t.inherited && t.role !== "ignore" && t.role !== "scale" && !inPair.has(t.name) && !tokens.some((x) => x.via === t.name)).map((t) => t.name))];
+  return { tokens, pairs: pairs.slice(0, MAX_PAIRS), groups: groups2, modes: modes2, tooMany: pairs.length > MAX_PAIRS, unchecked };
 }
 var TEXT_UTILITY = /(^|[\s.:(*,>])\.?[\w\\:\[\]\.*-]*text-[\w\\/.!\[\]#-]+/;
 var baseSel = (sel) => String(sel).split(",")[0].trim().replace(/::?[\w-]+(\([^)]*\))?/g, "").trim();
+var DISABLED = /:disabled|\[disabled\]|\.disabled\b|aria-disabled=["']?true|is-disabled|--disabled/i;
+var states = (sel) => [...new Set(String(sel).split(",")[0].match(/:(hover|focus-visible|focus-within|focus|active|checked|selected|current)\b/g) || [])].sort().join("");
 var PAGE_SEL = /^(html|body|:root)(\s*,\s*(html|body|:root))*$/i;
 var ELSEWHERE = /invers|revers|on-dark|on-light|knockout|\.dark\b|dark-mode|-dark\b|::selection|disabled/i;
 function pickMain(list, mode) {
@@ -3734,7 +3806,7 @@ function findTok(all, ref) {
 function synth(tokens, v, mode, selector) {
   let t = tokens.find((x) => x.literal && x.hex === v.hex && (x.alpha ?? 1) === (v.alpha ?? 1) && x.mode === mode);
   if (!t) {
-    t = { name: `#${v.hex}`, hex: v.hex, alpha: v.alpha, mode, id: tokens.length, role: "literal", literal: true, raw: v.raw || null, span: v.span || null, format: v.format, where: selector };
+    t = { name: (v.alpha ?? 1) < 1 ? v.raw || `#${v.hex}${Math.round(v.alpha * 255).toString(16).padStart(2, "0")}` : `#${v.hex}`, hex: v.hex, alpha: v.alpha, mode, id: tokens.length, role: "literal", literal: true, raw: v.raw || null, span: v.span || null, format: v.format, where: selector };
     tokens.push(t);
   }
   return t;
@@ -3782,7 +3854,7 @@ function judge(p, target = "AA", apca2) {
 function collisions(groups2) {
   const out = [];
   for (const g of groups2) {
-    const m = g.members;
+    const m = g.members.slice(0, 24);
     for (let i = 0; i < m.length; i++) for (let j = i + 1; j < m.length; j++) {
       const a = m[i], b = m[j];
       const normal = dE(a.hex, b.hex);
@@ -3906,16 +3978,47 @@ function nearestL(hex3, test) {
   }
   return best && test(best.x) ? best.x : null;
 }
-function solve(planned, target = "AA", lock = []) {
+var COLOR_WORDS = /^(red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|gray|grey|slate|zinc|neutral|stone|white|black|brown|navy|maroon|olive|silver|gold|magenta|lavender|coral|beige)$/i;
+var isPalette = (t) => t.role === "scale" || !!t.primitive || COLOR_WORDS.test(words(t.name).at(-1) || "");
+function solve(planned, target = "AA", lock = [], opts = {}) {
+  const margin = opts.margin ?? 0.1;
   const value = new Map(planned.tokens.map((t) => [t.id, t.hex]));
   const locked = new Set(lock.map(String));
   const pairs = planned.pairs.filter((p) => p.kind !== "decor" && !p.optional && !p.image);
-  const ok = (p, v = value) => {
-    const bg = p.bg.alpha < 1 ? over(v.get(p.bg.id), p.bg.alpha, p.mode === "dark" ? "000000" : "ffffff") : v.get(p.bg.id);
-    return contrast2(over(v.get(p.fg.id), p.fg.alpha, bg), bg) >= needOf(p.kind, target);
+  const shownBg = (p, v) => p.bg.alpha < 1 ? over(v.get(p.bg.id), p.bg.alpha, p.mode === "dark" ? "000000" : "ffffff") : v.get(p.bg.id);
+  const ratioOf = (p, v = value) => {
+    const bg = shownBg(p, v);
+    return contrast(col2(over(v.get(p.fg.id), p.fg.alpha, bg)), col2(bg));
   };
-  const moved = /* @__PURE__ */ new Map();
+  const ok = (p, v = value, extra = 0) => {
+    const r2 = ratioOf(p, v);
+    return r2 >= needOf(p.kind, target) + extra && contrast2(over(v.get(p.fg.id), p.fg.alpha, shownBg(p, v)), shownBg(p, v)) >= needOf(p.kind, target);
+  };
+  const lum2 = (h) => luminance(col2(h));
+  const side = new Map(pairs.map((p) => [p, Math.sign(lum2(value.get(p.fg.id)) - lum2(value.get(p.bg.id)))]));
+  const sameSide = (p) => {
+    const sg = side.get(p);
+    return !sg || Math.sign(lum2(value.get(p.fg.id)) - lum2(value.get(p.bg.id))) === sg;
+  };
   const byId = new Map(planned.tokens.map((t) => [t.id, t]));
+  const copies = /* @__PURE__ */ new Map();
+  for (const t of planned.tokens) if (t.inherited) {
+    const src = planned.tokens.find((x) => x.name === t.name && x.mode === "light" && !x.inherited);
+    if (src) copies.set(src.id, [...copies.get(src.id) || [], t.id]);
+  }
+  const ids = (t) => [t.id, ...copies.get(t.id) || []];
+  const setAll = (t, x) => {
+    for (const i of ids(t)) value.set(i, x);
+  };
+  const siblings = (t) => {
+    const src = t.via && planned.tokens.find((x) => x.name === t.via && x.mode === t.mode) || planned.tokens.find((x) => x.name === t.via);
+    if (!src || !isPalette(src)) return null;
+    const stem = src.name.replace(/[-_.]?\d+$/, "");
+    if (stem === src.name) return null;
+    return planned.tokens.filter((x) => x !== src && x.mode === src.mode && x.name !== src.name && x.name.replace(/[-_.]?\d+$/, "") === stem && /\d+$/.test(x.name)).map((x) => ({ x, src }));
+  };
+  const movable = (t) => !t.inherited && !locked.has(t.name) && !locked.has(t.hex) && !locked.has("#" + t.hex) && !(isPalette(t) && planned.tokens.some((x) => x.via === t.name));
+  const moved = /* @__PURE__ */ new Map(), repoint = /* @__PURE__ */ new Map();
   for (let round2 = 0; round2 < 60; round2++) {
     const failing2 = pairs.filter((p) => !ok(p));
     if (!failing2.length) break;
@@ -3923,35 +4026,77 @@ function solve(planned, target = "AA", lock = []) {
     const cands = /* @__PURE__ */ new Map();
     for (const p of failing2.slice(0, 40)) for (const t of [p.fg, p.bg]) {
       const tk = byId.get(t.id) || t;
-      if (!tk.inherited && !locked.has(tk.name) && !locked.has(tk.hex) && !locked.has("#" + tk.hex)) cands.set(tk.id, tk);
+      if (movable(tk)) cands.set(tk.id, tk);
     }
     for (const t of cands.values()) {
-      const mine = pairs.filter((p) => p.fg.id === t.id || p.bg.id === t.id);
+      const all = ids(t);
+      const mine = pairs.filter((p) => all.includes(p.fg.id) || all.includes(p.bg.id));
       const prev = value.get(t.id);
-      const to = nearestL(prev, (x) => {
-        value.set(t.id, x);
-        const r2 = mine.every((p) => ok(p));
-        value.set(t.id, prev);
+      const test = (x) => {
+        setAll(t, x);
+        const r2 = mine.every((p) => ok(p, value, failing2.includes(p) ? margin : 0) && sameSide(p));
+        setAll(t, prev);
         return r2;
-      });
+      };
+      let to = null, via = null;
+      const sib = siblings(t);
+      if (sib) {
+        const hit = sib.filter(({ x }) => test(x.hex)).sort((a, b2) => dE(prev, a.x.hex) - dE(prev, b2.x.hex))[0];
+        if (hit) {
+          to = hit.x.hex;
+          via = { from: hit.src.name, to: hit.x.name };
+        }
+      }
+      if (!to) to = nearestL(prev, test);
       if (!to) continue;
-      const fixes = failing2.filter((p) => p.fg.id === t.id || p.bg.id === t.id).length;
-      const cost = dE(value.get(t.id), to) * (WEIGHT[t.role] || 1.5) / fixes;
-      if (!best || cost < best.cost) best = { t, to, cost };
+      const fixes = failing2.filter((p) => all.includes(p.fg.id) || all.includes(p.bg.id)).length;
+      const cost = dE(prev, to) * (WEIGHT[t.role] || 1.5) * (via ? 0.8 : 1) / fixes;
+      if (!best || cost < best.cost) best = { t, to, cost, via };
     }
     if (!best) break;
-    value.set(best.t.id, best.to);
+    setAll(best.t, best.to);
     moved.set(best.t.id, best.t);
+    if (best.via) repoint.set(best.t.id, best.via);
+    else repoint.delete(best.t.id);
   }
-  const changes = [...moved.values()].map((t) => ({ name: t.name, mode: t.mode, role: t.role, from: t.hex, to: value.get(t.id), deltaE: dE(t.hex, value.get(t.id)), span: t.span, raw: t.raw, format: t.format, alpha: t.alpha })).filter((c2) => c2.from !== c2.to);
-  const remaining = pairs.filter((p) => !ok(p)).map((p) => ({
-    fg: p.fg.name,
-    bg: p.bg.name,
-    mode: p.mode,
-    kind: p.kind,
-    // what one side alone would need, ignoring the other pairs
-    suggest: { fg: nearestL(value.get(p.fg.id), (x) => ok(p, new Map(value).set(p.fg.id, x))), bg: nearestL(value.get(p.bg.id), (x) => ok(p, new Map(value).set(p.bg.id, x))) }
-  })).slice(0, 60);
+  const changes = [...moved.values()].map((t) => ({
+    name: t.name,
+    mode: t.mode,
+    role: t.role,
+    from: t.hex,
+    to: value.get(t.id),
+    deltaE: dE(t.hex, value.get(t.id)),
+    span: t.span,
+    raw: t.raw,
+    format: t.format,
+    alpha: t.alpha,
+    ...repoint.get(t.id) ? { repoint: repoint.get(t.id) } : {},
+    ...copies.get(t.id) ? { alsoDark: true } : {}
+  })).filter((c2) => c2.from !== c2.to);
+  const why = (p) => {
+    const f2 = byId.get(p.fg.id), b = byId.get(p.bg.id);
+    const stuck = [f2, b].filter((t) => !movable(t));
+    if (stuck.length === 2) return `${stuck.map((t) => t.name).join(" and ")} cannot change (${stuck.map((t) => locked.has(t.name) || locked.has("#" + t.hex) ? "locked" : t.inherited ? "inherited from light mode" : "a palette step other tokens use").join(", ")})`;
+    const lockedOne = [f2, b].find((t) => locked.has(t.name) || locked.has("#" + t.hex));
+    if (lockedOne) return `${lockedOne.name} is locked, and the other color cannot move far enough without turning the pair around`;
+    const shared = [f2, b].find((t) => copies.get(t.id) || t.inherited);
+    if (shared) return `${shared.name} is the same value in light and dark mode, and no single value passes on both backgrounds: give it its own dark value`;
+    return "no single color can move without breaking another pair or turning the pair around";
+  };
+  const remaining = pairs.filter((p) => !ok(p)).map((p) => {
+    const keep = (id, x) => {
+      const v = new Map(value).set(id, x);
+      return ok(p, v, margin) && Math.sign(lum2(v.get(p.fg.id)) - lum2(v.get(p.bg.id))) === side.get(p);
+    };
+    return {
+      fg: p.fg.name,
+      bg: p.bg.name,
+      mode: p.mode,
+      kind: p.kind,
+      reason: why(p),
+      suggest: { fg: movable(byId.get(p.fg.id)) ? nearestL(value.get(p.fg.id), (x) => keep(p.fg.id, x)) : null, bg: movable(byId.get(p.bg.id)) ? nearestL(value.get(p.bg.id), (x) => keep(p.bg.id, x)) : null }
+    };
+  }).slice(0, 60);
   return { target, changes, remaining, values: value };
 }
 function writeLike(hex3, raw, format, alpha = 1) {
@@ -3984,7 +4129,7 @@ function writeLike(hex3, raw, format, alpha = 1) {
   }
 }
 function applyFix(text2, changes, label = "colors") {
-  const edits = changes.filter((c2) => c2.span).map((c2) => ({ ...c2, out: writeLike(c2.to, c2.raw, c2.format, c2.alpha) })).sort((a, b) => b.span[0] - a.span[0]);
+  const edits = changes.filter((c2) => c2.span).map((c2) => ({ ...c2, out: c2.repoint && c2.raw && c2.raw.includes(c2.repoint.from) ? c2.raw.replace(c2.repoint.from, c2.repoint.to) : writeLike(c2.to, c2.raw, c2.format, c2.alpha) })).sort((a, b) => b.span[0] - a.span[0]);
   let out = text2;
   for (const e3 of edits) out = out.slice(0, e3.span[0]) + e3.out + out.slice(e3.span[1]);
   const A = text2.split("\n"), B = out.split("\n");
@@ -4019,7 +4164,7 @@ function check(input, opts = {}) {
   const planned = plan(read, opts);
   const judged = planned.pairs.map((p) => judge(p, target, opts.apca));
   const clash = collisions(planned.groups);
-  const fix = solve(planned, target, opts.lock || []);
+  const fix = solve(planned, target, opts.lock || [], { margin: opts.margin });
   const applied = applyFix(text2, fix.changes, opts.label);
   const byMode = {};
   for (const m of planned.modes) byMode[m] = feel(planned.tokens.filter((t) => t.mode === m && t.role !== "ignore").map((t) => t.hex));
@@ -4031,7 +4176,8 @@ function check(input, opts = {}) {
     standard: TARGETS[target].label,
     tokens: planned.tokens.filter((t) => !t.literal || judged.some((p) => p.fg.name === t.name || p.bg.name === t.name)).map((t) => ({ name: t.name, hex: t.hex, alpha: t.alpha ?? 1, mode: t.mode, role: t.role || "other", why: t.why || null, at: t.span ? t.span[0] : null, ...t.where ? { where: t.where } : {}, ...t.inherited ? { inherited: true } : {} })),
     pairs: judged,
-    collisions: clash,
+    collisions: clash.slice(0, 60),
+    unchecked: planned.unchecked,
     feel: byMode,
     fix: { changes: fix.changes.map((c2) => ({ ...c2, span: c2.span || null, raw: c2.raw ?? null })), remaining: fix.remaining, text: fix.changes.length ? applied.text : null, diff: applied.diff, unwritten: applied.unwritten }
   };
@@ -4044,7 +4190,7 @@ function summarize(r2) {
   const pass = judged.length - fail2.length;
   const lines = [];
   if (!r2.input.colors) return { pass: 0, fail: 0, total: 0, issues: 0, text: r2.input.rules ? `${r2.input.rules} CSS rules read, but none sets a color that can be paired (colors set by scripts or images are not seen).` : "No colors found. Paste hex codes, CSS, Tailwind config or design tokens.", lines: [] };
-  if (!judged.length) lines.push(`${r2.input.colors} colors read, but no pairs to judge: tell the checker which colors are text and which are backgrounds.`);
+  if (!judged.length) lines.push(`${r2.input.colors} ${r2.input.colors === 1 ? "color" : "colors"} read, but no pairs to judge: tell the checker which colors are text and which are backgrounds.`);
   else lines.push(`${judged.length} ${judged.length === 1 ? "pair" : "pairs"} checked against ${r2.standard}: ${pass} pass, ${fail2.length} fail.`);
   if (fail2.length) {
     const kinds = {};
@@ -4058,8 +4204,10 @@ function summarize(r2) {
   if (r2.fix.remaining.length) lines.push(`${r2.fix.remaining.length} ${r2.fix.remaining.length === 1 ? "pair needs" : "pairs need"} both colors to move; see the suggestions.`);
   const cvd = r2.pairs.filter((p) => p.pass && p.vision && p.vision.ratio < p.need);
   if (cvd.length) lines.push(`${cvd.length} passing ${cvd.length === 1 ? "pair drops" : "pairs drop"} below ${r2.standard} for some color vision (${[...new Set(cvd.map((p) => p.vision.label))].join(", ")}).`);
-  const same = r2.collisions.filter((c2) => c2.normal >= 10 && c2.common);
-  if (same.length) lines.push(`${same.length} ${same.length === 1 ? "pair" : "pairs"} of ${same[0].group.toLowerCase()} look alike with color-blindness: don't let color alone tell them apart.`);
+  const same = r2.collisions.filter((c2) => c2.normal >= 10 && c2.common), rare = r2.collisions.filter((c2) => c2.normal >= 10 && !c2.common);
+  if (same.length) lines.push(`${same.length} ${same.length === 1 ? "pair" : "pairs"} of ${same[0].group.toLowerCase()} look alike with red-green color blindness${rare.length ? ` (${rare.length} more only with rarer types)` : ""}: don't let color alone tell them apart.`);
+  else if (rare.length) lines.push(`${rare.length} ${rare.length === 1 ? "pair looks" : "pairs look"} alike only with rarer color blindness (${[...new Set(rare.map((c2) => c2.worst.label))].join(", ")}).`);
+  if (r2.unchecked?.length) lines.push(`${r2.unchecked.length} ${r2.unchecked.length === 1 ? "color has" : "colors have"} no role and ${r2.unchecked.length === 1 ? "was" : "were"} not checked: ${r2.unchecked.slice(0, 6).join(", ")}${r2.unchecked.length > 6 ? ", \u2026" : ""}. Give ${r2.unchecked.length === 1 ? "it" : "them"} a role to check ${r2.unchecked.length === 1 ? "it" : "them"}.`);
   const narrow = judged.filter((p) => p.pass && p.kind === "text" && p.ratio < 5);
   if (narrow.length) lines.push(`${narrow.length} text ${narrow.length === 1 ? "pair passes" : "pairs pass"} by less than 0.5; glare and low vision will lose ${narrow.length === 1 ? "it" : "them"}.`);
   return { pass, fail: fail2.length, total: judged.length, issues: fail2.length + same.length, text: lines.join(" "), lines };
@@ -4141,13 +4289,25 @@ function groups(files, read = (f2) => fs.readFileSync(f2, "utf8")) {
     else other.push({ file: f2, text: text2 });
   }
   const out = [];
-  if (css.length) {
+  const defs = css.map((c2) => new Set([...c2.text.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1])));
+  const uses = css.map((c2) => new Set([...c2.text.matchAll(/var\(\s*(--[\w-]+)/g)].map((m) => m[1])));
+  const parent = css.map((_, i) => i);
+  const find = (i) => parent[i] === i ? i : parent[i] = find(parent[i]);
+  for (let i = 0; i < css.length; i++) for (let j = 0; j < css.length; j++) {
+    if (i !== j && [...uses[i]].some((v) => !defs[i].has(v) && defs[j].has(v))) parent[find(i)] = find(j);
+  }
+  const sets = /* @__PURE__ */ new Map();
+  css.forEach((c2, i) => {
+    const r2 = find(i);
+    sets.set(r2, [...sets.get(r2) || [], c2]);
+  });
+  for (const list of sets.values()) {
     let text2 = "", parts = [];
-    for (const c2 of css) {
+    for (const c2 of list) {
       parts.push({ file: c2.file, start: text2.length, end: text2.length + c2.text.length, text: c2.text });
       text2 += c2.text + "\n";
     }
-    out.push({ label: css.length === 1 ? css[0].file : `${css.length} stylesheets`, text: text2, parts });
+    out.push({ label: list.length === 1 ? list[0].file : `${list.length} stylesheets that share variables`, text: text2, parts });
   }
   for (const o of other) out.push({ label: o.file, text: o.text, parts: [{ file: o.file, start: 0, end: o.text.length, text: o.text }] });
   return out;
@@ -4172,7 +4332,7 @@ function whereOf(group, report, pair) {
   return { file: group.parts[0].file, line: 1, column: 1 };
 }
 var failing = (r2) => r2.pairs.filter((p) => !p.pass && p.kind !== "decor" && !p.optional);
-var lookAlike = (r2) => r2.collisions.filter((c2) => c2.common);
+var lookAlike = (r2) => r2.collisions.filter((c2) => c2.common).filter((c2, i, l) => l.findIndex((x) => x.a.name === c2.a.name && x.b.name === c2.b.name) === i);
 var link = (r2) => `${SITE}/color-checker`;
 var fixOf = (r2, p) => r2.fix.changes.filter((c2) => c2.mode === p.mode && (c2.name === p.fg.name || c2.name === p.bg.name)).map((c2) => `${c2.name} \u2192 #${c2.to}`).filter((x, i, l) => l.indexOf(x) === i).join(", ");
 function text(results, opts) {
@@ -4277,8 +4437,29 @@ var CANDIDATES = {
   linux: ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/snap/bin/chromium", "/usr/bin/microsoft-edge"],
   win32: [`${process.env.PROGRAMFILES}\\Google\\Chrome\\Application\\chrome.exe`, `${process.env["PROGRAMFILES(X86)"]}\\Google\\Chrome\\Application\\chrome.exe`, `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`]
 };
+function headlessShells() {
+  const out = [];
+  for (const root of [path3.join(process.cwd(), "chrome-headless-shell"), path3.join(os.homedir(), ".cache", "puppeteer", "chrome-headless-shell")]) {
+    let vers = [];
+    try {
+      vers = fs2.readdirSync(root).sort().reverse();
+    } catch {
+      continue;
+    }
+    for (const v of vers) {
+      let subs = [];
+      try {
+        subs = fs2.readdirSync(path3.join(root, v));
+      } catch {
+        continue;
+      }
+      for (const sub of subs) out.push(path3.join(root, v, sub, process.platform === "win32" ? "chrome-headless-shell.exe" : "chrome-headless-shell"));
+    }
+  }
+  return out;
+}
 function findChrome(given) {
-  const list = [given, process.env.CHROME_PATH, ...CANDIDATES[process.platform] || []].filter(Boolean);
+  const list = [given, process.env.CHROME_PATH, ...headlessShells(), ...CANDIDATES[process.platform] || []].filter(Boolean);
   const hit = list.find((p) => {
     try {
       return fs2.statSync(p).isFile();
@@ -4291,8 +4472,9 @@ function findChrome(given) {
 }
 function launch(bin) {
   const dir = fs2.mkdtempSync(path3.join(os.tmpdir(), "everyhexcode-chrome-"));
+  const shell = /headless[-_]shell/i.test(bin);
   const args = [
-    "--headless=new",
+    ...shell ? [] : ["--headless=new"],
     "--remote-debugging-port=0",
     `--user-data-dir=${dir}`,
     "--no-first-run",
@@ -4506,6 +4688,7 @@ var COLLECT = `(() => {
     const own = [...el.childNodes].some((c) => c.nodeType === 3 && c.textContent.trim().length > 1);
     const field = /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(el.tagName);
     if (!own && !field) continue;
+    if (el.disabled || el.closest('[aria-disabled="true"], fieldset:disabled')) continue; // disabled controls are exempt
     const cs = getComputedStyle(el);
     if (cs.visibility !== 'visible' || cs.display === 'none' || parseFloat(cs.fontSize) < 6) continue;
     const r = el.getBoundingClientRect();
@@ -4541,7 +4724,7 @@ async function renderScan(url, opts = {}) {
   const bin = findChrome(opts.chrome);
   const width = opts.width || 1280;
   const ch = await launch(bin);
-  opts.log?.(`Chrome started (pid ${ch.pid}, headless, temporary profile).`);
+  opts.log?.(`${/headless[-_]shell/i.test(bin) ? "chrome-headless-shell" : "Chrome"} started (pid ${ch.pid}, headless, temporary profile).`);
   let cdp;
   try {
     cdp = await connect(ch.ws);
@@ -4559,14 +4742,22 @@ async function renderScan(url, opts = {}) {
       cdp.send("Page.handleJavaScriptDialog", { accept: false }, s).catch(() => {
       });
     });
-    const rules = [];
+    const rules = [], notes = [];
+    let gone = false;
+    cdp.on("Inspector.detached", () => {
+      gone = true;
+    });
+    cdp.on("Target.detachedFromTarget", (p) => {
+      if (p.targetId === targetId) gone = true;
+    });
+    const started = Date.now(), budget = (opts.timeout || 150) * 1e3;
     const evaluate = async (expression) => {
       for (let i = 0; ; i++) {
         try {
           return await cdp.send("Runtime.evaluate", { expression, returnByValue: true }, s, 15e3);
         } catch (e3) {
           if (!/did not answer/.test(e3.message)) throw e3;
-          if (i >= 1) throw new Error("The page stopped answering: its own scripts keep the browser busy. Scan a lighter page (a local build, one route), or check the CSS with `everyhexcode check`.");
+          if (i >= 1 || gone || Date.now() - started > budget) throw new Error("STALLED");
           opts.log?.("The page is not answering; reconnecting to it.");
           try {
             await cdp.send("Target.detachFromTarget", { sessionId: s }, void 0, 5e3);
@@ -4581,61 +4772,67 @@ async function renderScan(url, opts = {}) {
     };
     let elements = 0, images = 0, finalUrl = url;
     for (const mode of opts.modes || ["light", "dark"]) {
-      await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: mode }, { name: "prefers-reduced-motion", value: "reduce" }] }, s);
-      await cdp.send("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false }, s);
-      opts.log?.(`${mode}: loading ${url}`);
-      const loaded = cdp.once("Page.loadEventFired", 3e4);
-      const idle = cdp.once("Page.lifecycleEvent", 2e4, (p) => p.name === "networkIdle");
-      const nav = await cdp.send("Page.navigate", { url }, s);
-      if (nav.errorText) throw new Error(`Could not load ${url}: ${nav.errorText}`);
-      const ev = await loaded;
-      await idle;
-      if (process.env.EHC_DEBUG) opts.log?.(`load event: ${ev ? "yes" : "no (30 s)"}`);
-      await new Promise((r2) => setTimeout(r2, 1200));
       const items = [];
       let over2 = [];
-      const until = Date.now() + 6e4;
-      let shotsOk = true;
-      for (let step = 0; step < 15; step++) {
-        const res = await evaluate(`scrollTo(0, ${step * 800}); ${COLLECT}`);
-        if (res.exceptionDetails) throw new Error("The page could not be read: " + (res.exceptionDetails.exception?.description || res.exceptionDetails.text));
-        const got = res.result.value;
-        finalUrl = got.url;
-        items.push(...got.items);
-        for (const it of got.items.filter((x) => x.image)) {
-          if (!shotsOk || over2.length >= 60) break;
-          if (Date.now() > until) {
-            opts.log?.("Image sampling stopped after 60 s; the rest keep their composited background.");
-            shotsOk = false;
-            break;
-          }
-          over2.push(it);
-          await cdp.send("Runtime.evaluate", { expression: `(() => { const e = document.querySelector('[data-ehc-i="${it.i}"]'); if (e) { e.dataset.ehcColor = e.style.color; e.style.setProperty('color', 'transparent', 'important'); e.style.setProperty('text-shadow', 'none', 'important'); } })()` }, s);
-          const [x, y, w, hh] = it.rect;
-          try {
-            const shot = await cdp.send("Page.captureScreenshot", { format: "png", clip: { x: Math.max(0, x), y: Math.max(0, y), width: Math.max(1, Math.min(w, 600)), height: Math.max(1, Math.min(hh, 300)), scale: 1 } }, s, 8e3);
-            const img = decodePng(Buffer.from(shot.data, "base64"));
-            const fg = it.fg.slice(0, 3), samples = [];
-            const stepPx = Math.max(1, Math.floor(Math.sqrt(img.width * img.height / 3e3)));
-            for (let yy = 0; yy < img.height; yy += stepPx) for (let xx = 0; xx < img.width; xx += stepPx) {
-              const c2 = img.px(xx, yy);
-              samples.push({ c: c2, r: ratio(fg, c2) });
-            }
-            samples.sort((a, b) => a.r - b.r);
-            const worst = samples[Math.floor(samples.length * 0.1)];
-            if (worst) {
-              it.bg = [...worst.c, 1];
-              it.sampled = true;
-            }
-          } catch (e3) {
-            if (/did not answer/.test(e3.message)) {
-              opts.log?.("Screenshots are not answering on this page; image sampling stopped.");
+      try {
+        await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: mode }, { name: "prefers-reduced-motion", value: "reduce" }] }, s);
+        await cdp.send("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false }, s);
+        opts.log?.(`${mode}: loading ${url}`);
+        const loaded = cdp.once("Page.loadEventFired", 3e4);
+        const idle = cdp.once("Page.lifecycleEvent", 3e4, (p) => p.name === "networkIdle");
+        const nav = await cdp.send("Page.navigate", { url }, s);
+        if (nav.errorText) throw new Error(`Could not load ${url}: ${nav.errorText}`);
+        const ev = await loaded;
+        await Promise.race([idle, new Promise((r2) => setTimeout(r2, 6e3))]);
+        if (process.env.EHC_DEBUG) opts.log?.(`load event: ${ev ? "yes" : "no (30 s)"}`);
+        await new Promise((r2) => setTimeout(r2, 1200));
+        const until = Date.now() + 6e4;
+        let shotsOk = true;
+        for (let step = 0; step < 15; step++) {
+          const res = await evaluate(`scrollTo(0, ${step * 800}); ${COLLECT}`);
+          if (res.exceptionDetails) throw new Error("The page could not be read: " + (res.exceptionDetails.exception?.description || res.exceptionDetails.text));
+          const got = res.result.value;
+          finalUrl = got.url;
+          items.push(...got.items);
+          for (const it of got.items.filter((x) => x.image)) {
+            if (!shotsOk || over2.length >= 60) break;
+            if (Date.now() > until) {
+              opts.log?.("Image sampling stopped after 60 s; the rest keep their composited background.");
               shotsOk = false;
+              break;
             }
+            over2.push(it);
+            await cdp.send("Runtime.evaluate", { expression: `(() => { const e = document.querySelector('[data-ehc-i="${it.i}"]'); if (e) { e.dataset.ehcColor = e.style.color; e.style.setProperty('color', 'transparent', 'important'); e.style.setProperty('text-shadow', 'none', 'important'); } })()` }, s);
+            const [x, y, w, hh] = it.rect;
+            try {
+              const shot = await cdp.send("Page.captureScreenshot", { format: "png", clip: { x: Math.max(0, x), y: Math.max(0, y), width: Math.max(1, Math.min(w, 600)), height: Math.max(1, Math.min(hh, 300)), scale: 1 } }, s, 8e3);
+              const img = decodePng(Buffer.from(shot.data, "base64"));
+              const fg = it.fg.slice(0, 3), samples = [];
+              const stepPx = Math.max(1, Math.floor(Math.sqrt(img.width * img.height / 3e3)));
+              for (let yy = 0; yy < img.height; yy += stepPx) for (let xx = 0; xx < img.width; xx += stepPx) {
+                const c2 = img.px(xx, yy);
+                samples.push({ c: c2, r: ratio(fg, c2) });
+              }
+              samples.sort((a, b) => a.r - b.r);
+              const worst = samples[Math.floor(samples.length * 0.1)];
+              if (worst) {
+                it.bg = [...worst.c, 1];
+                it.sampled = true;
+              }
+            } catch (e3) {
+              if (/did not answer/.test(e3.message)) {
+                opts.log?.("Screenshots are not answering on this page; image sampling stopped.");
+                shotsOk = false;
+              }
+            }
+            await cdp.send("Runtime.evaluate", { expression: `(() => { const e = document.querySelector('[data-ehc-i="${it.i}"]'); if (e) { e.style.color = e.dataset.ehcColor || ''; e.style.removeProperty('text-shadow'); } })()` }, s);
           }
-          await cdp.send("Runtime.evaluate", { expression: `(() => { const e = document.querySelector('[data-ehc-i="${it.i}"]'); if (e) { e.style.color = e.dataset.ehcColor || ''; e.style.removeProperty('text-shadow'); } })()` }, s);
+          if ((step + 1) * 800 >= got.height) break;
         }
-        if ((step + 1) * 800 >= got.height) break;
+      } catch (e3) {
+        if (!/STALLED|did not answer|detached|closed|Target closed|No session/i.test(e3.message) && !gone) throw e3;
+        notes.push(`${mode} mode: the page stopped answering after ${items.length ? `${items.length} texts were read` : "loading"}${gone ? " (its renderer quit)" : ""}; ${items.length ? "the result is partial" : "nothing could be read"}.`);
+        gone = true;
       }
       opts.log?.(`${mode}: ${items.length} text elements, ${over2.length} over images or gradients`);
       elements += items.length;
@@ -4656,11 +4853,13 @@ async function renderScan(url, opts = {}) {
         const sel = `${it.sel.replace(/[{}()]/g, "")}${count > 1 ? ` (and ${count - 1} more)` : ""}${it.sampled ? " (over an image: the worst part behind the text)" : it.image ? " (over an image)" : ""}`;
         return `${sel} { color: ${fg}; background-color: ${hex2(it.bg.slice(0, 3))}; font-size: ${it.size}px; font-weight: ${it.weight}; }`;
       }).join("\n");
-      rules.push(mode === "dark" ? `@media (prefers-color-scheme: dark) {
+      if (block) rules.push(mode === "dark" ? `@media (prefers-color-scheme: dark) {
 ${block}
 }` : block);
+      if (gone) break;
     }
-    return { url: finalUrl, css: rules.join("\n\n"), elements, images };
+    if (!elements) throw new Error(`The page stopped answering before any text could be read: its scripts keep the browser busy.${/headless[-_]shell/i.test(bin) ? "" : " chrome-headless-shell often copes where full Chrome does not: npx @puppeteer/browsers install chrome-headless-shell@stable, then run the scan again."} Or check the stylesheets with \`everyhexcode check\`.`);
+    return { url: finalUrl, css: rules.join("\n\n"), elements, images, notes };
   } finally {
     try {
       await Promise.race([cdp?.send("Browser.close"), new Promise((r2) => setTimeout(r2, 1500))]);
@@ -4695,6 +4894,7 @@ Options
   --verbose              list passing pairs too
   --chrome <path>        Chrome or Chromium to use for scan (default: CHROME_PATH or the usual install)
   --width <px>           viewport width for scan (default 1280)
+  --timeout <s>          give up on a page that stops answering after this long (default 150), keeping what was read
 
 Settings file (colorcheck.json)
   { "files": ["src/styles"], "target": "AA", "lock": ["--brand"], "roles": { "--muted": "bg" },
@@ -4784,13 +4984,15 @@ async function main() {
       return 2;
     }
     const modes2 = a.dark ? ["dark"] : a.light ? ["light"] : ["light", "dark"];
-    const s = await renderScan(url, { chrome: a.chrome, width: Number(a.width) || 1280, modes: modes2, log: (m) => process.stderr.write(m + "\n") });
+    const s = await renderScan(url, { chrome: a.chrome, width: Number(a.width) || 1280, timeout: Number(a.timeout) || 150, modes: modes2, log: (m) => process.stderr.write(m + "\n") });
     const report = check(s.css, { ...opts, label: "rendered" });
     report.input.kind = "rendered page";
     const group = { label: `${s.url} (rendered)`, text: s.css, parts: [{ file: s.url, start: 0, end: s.css.length, text: s.css }] };
     emit([{ group, report }], a, VERSION2);
     if ((a.format || "text") === "text") process.stderr.write(`Read ${s.elements} text elements (${s.images} over images or gradients) in ${modes2.join(" and ")} mode.
-`);
+${s.notes.map((n) => `Note: ${n}
+`).join("")}`);
+    report.input.warnings.push(...s.notes);
     return exitCode([{ report }], failOn);
   }
   const files = expand(a._.length ? a._ : cfg.files || ["."]);

@@ -118,6 +118,7 @@ export function readCss(text) {
     let val = src.slice(vs, ve);
     const imp = val.match(/\s*!(?:important|default|global)\s*$/i);
     if (imp) { val = val.slice(0, -imp[0].length); ve -= imp[0].length; }
+    if (stack.some((p) => /^@media\b[^{]*\bprint\b/i.test(p) && !/screen/i.test(p))) return; // print styles never reach a screen
     decls.push({ prop: m[1], value: val, span: [vs, ve], depth: stack.length, prelude: stack[stack.length - 1] || '', global: stack.every(isGlobalScope), mode: mode(), scoped: stack.some((p) => LIGHT_SEL.test(p)), block: blockId });
   };
   let blockId = 0, blockSeq = 0; const blockStack = [];
@@ -316,9 +317,25 @@ const MODE_WORD = /^(light|dark|day|night|lightmode|darkmode|light-mode|dark-mod
 const modeOfWord = (w) => (/dark|night/i.test(w) ? 'dark' : 'light');
 
 /** Design tokens: DTCG ($value), Style Dictionary (value), Figma variables, Tokens Studio, or any JSON of colours. */
+/** JSON5 and JSON with comments (Primer, Tokens Studio): comments, unquoted keys, single quotes and trailing commas made plain JSON. */
+function json5(text) {
+  let out = '', i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '"' || c === "'") { let j = i + 1, str = ''; while (j < text.length && text[j] !== c) { if (text[j] === '\\') { str += text[j] + text[j + 1]; j += 2; continue; } str += text[j] === '"' ? '\\"' : text[j]; j++; } out += '"' + str + '"'; i = j + 1; continue; }
+    if (c === '/' && text[i + 1] === '/') { while (i < text.length && text[i] !== '\n') i++; continue; }
+    if (c === '/' && text[i + 1] === '*') { const e = text.indexOf('*/', i + 2); i = e < 0 ? text.length : e + 2; continue; }
+    if (/[A-Za-z_$]/.test(c) && /[{,]\s*$/.test(out)) { const m = /^[A-Za-z_$][\w$-]*/.exec(text.slice(i)); const after = text.slice(i + m[0].length).match(/^\s*:/); if (after) { out += '"' + m[0] + '"'; i += m[0].length; continue; } }
+    out += c; i++;
+  }
+  return out.replace(/,(\s*[}\]])/g, '$1');
+}
+
 export function readJson(text) {
-  let data;
-  try { data = JSON.parse(text); } catch { return null; }
+  let data, converted = false;
+  try { data = JSON.parse(text); } catch {
+    try { const plain = json5(text); data = JSON.parse(plain); text = plain; converted = true; } catch { return null; }
+  }
   const tokens = [];
   // Figma variables: the REST API's meta.variables, or a plugin export with variables[] and valuesByMode
   const figma = data?.meta?.variables ? Object.values(data.meta.variables) : Array.isArray(data?.variables) ? data.variables : null;
@@ -388,6 +405,8 @@ export function readJson(text) {
     while (x && !x.hex && x.alias && n++ < 8) x = byName.get(`${x.alias}|${t.mode}`) || byName.get(`${x.alias}|light`);
     if (x?.hex && x !== t) Object.assign(t, { hex: x.hex, alpha: x.alpha, via: x.name });
   }
+  // JSON5 was read through a plain-JSON copy, so positions do not match the file: fixes are listed, not written
+  if (converted) for (const t of tokens) t.span = null;
   return { kind: dtcg ? 'dtcg' : sd ? 'style-dictionary' : 'json', tokens: tokens.filter((t) => t.hex) };
 }
 
@@ -436,6 +455,12 @@ export function readList(text) {
     const before = text.slice(lineStart, m.index);
     const nm = before.match(/([A-Za-z][\w .\-/]{0,50}?)\s*[:=]\s*$/);
     add(m[0], m.index, nm ? nm[1] : null);
+  }
+  if (found) {
+    // CSS colour names written beside functional colours ("rgb(0 0 0 / 50%), white")
+    const taken = tokens.map((t) => t.span);
+    const re = /(?<![\w#(-])([a-z]+)(?![\w(-])/gi;
+    while ((m = re.exec(text))) if (CSS_NAMES.has(m[1].toLowerCase()) && !taken.some(([a, b]) => m.index >= a && m.index < b) && !/[:=]\s*$/.test(text.slice(text.lastIndexOf('\n', m.index) + 1, m.index)) && !/[:=]/.test(text.slice(m.index + m[1].length, text.indexOf('\n', m.index) < 0 ? undefined : text.indexOf('\n', m.index)))) add(m[1], m.index, null);
   }
   if (!found) {
     // bare words: "ff5733 00adcc", "red, navy", "ff5733-00adcc"

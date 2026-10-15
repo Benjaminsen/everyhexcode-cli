@@ -14,8 +14,24 @@ const CANDIDATES = {
   linux: ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium', '/usr/bin/microsoft-edge'],
   win32: [`${process.env.PROGRAMFILES}\\Google\\Chrome\\Application\\chrome.exe`, `${process.env['PROGRAMFILES(X86)']}\\Google\\Chrome\\Application\\chrome.exe`, `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`],
 };
+// chrome-headless-shell (Google's build for automation) first: full Chrome in its new headless mode froze and lost its
+// renderer on stripe.com where the shell of the same version did not. Installed by
+// `npx @puppeteer/browsers install chrome-headless-shell@stable` (into ./chrome-headless-shell) or by Puppeteer (~/.cache/puppeteer).
+function headlessShells() {
+  const out = [];
+  for (const root of [path.join(process.cwd(), 'chrome-headless-shell'), path.join(os.homedir(), '.cache', 'puppeteer', 'chrome-headless-shell')]) {
+    let vers = [];
+    try { vers = fs.readdirSync(root).sort().reverse(); } catch { continue; }
+    for (const v of vers) {
+      let subs = [];
+      try { subs = fs.readdirSync(path.join(root, v)); } catch { continue; }
+      for (const sub of subs) out.push(path.join(root, v, sub, process.platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell'));
+    }
+  }
+  return out;
+}
 export function findChrome(given) {
-  const list = [given, process.env.CHROME_PATH, ...(CANDIDATES[process.platform] || [])].filter(Boolean);
+  const list = [given, process.env.CHROME_PATH, ...headlessShells(), ...(CANDIDATES[process.platform] || [])].filter(Boolean);
   const hit = list.find((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } });
   if (!hit) throw new Error('No Chrome or Chromium found. Install one, or set CHROME_PATH (or --chrome) to its binary.');
   return hit;
@@ -24,7 +40,8 @@ export function findChrome(given) {
 /** Start Chrome headless with a temporary profile; resolves with its DevTools address and a way to stop it. */
 export function launch(bin) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'everyhexcode-chrome-'));
-  const args = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${dir}`, '--no-first-run', '--no-default-browser-check', '--use-mock-keychain', '--password-store=basic',
+  const shell = /headless[-_]shell/i.test(bin);
+  const args = [...(shell ? [] : ['--headless=new']), '--remote-debugging-port=0', `--user-data-dir=${dir}`, '--no-first-run', '--no-default-browser-check', '--use-mock-keychain', '--password-store=basic',
     '--hide-scrollbars', '--mute-audio', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--force-color-profile=srgb', 'about:blank'];
   if (process.getuid?.() === 0) args.unshift('--no-sandbox'); // root in a CI container
   if (process.env.EHC_FLAGS != null) args.splice(0, args.length, '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${dir}`, ...process.env.EHC_FLAGS.split(' ').filter(Boolean), 'about:blank');
@@ -146,6 +163,7 @@ const COLLECT = `(() => {
     const own = [...el.childNodes].some((c) => c.nodeType === 3 && c.textContent.trim().length > 1);
     const field = /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(el.tagName);
     if (!own && !field) continue;
+    if (el.disabled || el.closest('[aria-disabled="true"], fieldset:disabled')) continue; // disabled controls are exempt
     const cs = getComputedStyle(el);
     if (cs.visibility !== 'visible' || cs.display === 'none' || parseFloat(cs.fontSize) < 6) continue;
     const r = el.getBoundingClientRect();
@@ -182,7 +200,7 @@ export async function renderScan(url, opts = {}) {
   const bin = findChrome(opts.chrome);
   const width = opts.width || 1280;
   const ch = await launch(bin);
-  opts.log?.(`Chrome started (pid ${ch.pid}, headless, temporary profile).`);
+  opts.log?.(`${/headless[-_]shell/i.test(bin) ? 'chrome-headless-shell' : 'Chrome'} started (pid ${ch.pid}, headless, temporary profile).`);
   let cdp;
   try {
     cdp = await connect(ch.ws);
@@ -200,14 +218,18 @@ export async function renderScan(url, opts = {}) {
     await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }, s);
     // an alert, confirm or beforeunload dialog stops the page until answered: dismiss it
     cdp.on('Page.javascriptDialogOpening', (p) => { opts.log?.(`Dismissed a ${p.type} dialog: ${String(p.message).slice(0, 80)}`); cdp.send('Page.handleJavaScriptDialog', { accept: false }, s).catch(() => {}); });
-    const rules = [];
+    const rules = [], notes = [];
+    let gone = false;
+    cdp.on('Inspector.detached', () => { gone = true; });
+    cdp.on('Target.detachedFromTarget', (p) => { if (p.targetId === targetId) gone = true; });
+    const started = Date.now(), budget = (opts.timeout || 150) * 1000;
     // a call sent while the page is still swapping documents (a redirect or reload done by script) is never answered:
     // ask again, a few times, before giving up
     const evaluate = async (expression) => {
       for (let i = 0; ; i++) {
         try { return await cdp.send('Runtime.evaluate', { expression, returnByValue: true }, s, 15000); } catch (e) {
           if (!/did not answer/.test(e.message)) throw e;
-          if (i >= 1) throw new Error('The page stopped answering: its own scripts keep the browser busy. Scan a lighter page (a local build, one route), or check the CSS with `everyhexcode check`.');
+          if (i >= 1 || gone || Date.now() - started > budget) throw new Error('STALLED');
           // an unanswered call blocks the ones after it: a fresh session to the same tab clears it
           opts.log?.('The page is not answering; reconnecting to it.');
           try { await cdp.send('Target.detachFromTarget', { sessionId: s }, undefined, 5000); } catch { /* already gone */ }
@@ -219,21 +241,22 @@ export async function renderScan(url, opts = {}) {
     };
     let elements = 0, images = 0, finalUrl = url;
     for (const mode of opts.modes || ['light', 'dark']) {
+      const items = [];
+      let over = [];
+      try {
       await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: mode }, { name: 'prefers-reduced-motion', value: 'reduce' }] }, s);
       await cdp.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false }, s);
       opts.log?.(`${mode}: loading ${url}`);
       const loaded = cdp.once('Page.loadEventFired', 30000);
       // network idle is the better sign a script-built page has settled; a page that keeps polling never gets there
-      const idle = cdp.once('Page.lifecycleEvent', 20000, (p) => p.name === 'networkIdle');
+      const idle = cdp.once('Page.lifecycleEvent', 30000, (p) => p.name === 'networkIdle');
       const nav = await cdp.send('Page.navigate', { url }, s);
       if (nav.errorText) throw new Error(`Could not load ${url}: ${nav.errorText}`);
       const ev = await loaded;
-      await idle;
+      await Promise.race([idle, new Promise((r) => setTimeout(r, 6000))]);
       if (process.env.EHC_DEBUG) opts.log?.(`load event: ${ev ? 'yes' : 'no (30 s)'}`);
       await new Promise((r) => setTimeout(r, 1200));
       // walk down the page a screen at a time: what is under each text is read while it is in view
-      const items = [];
-      let over = [];
       const until = Date.now() + 60000;
       let shotsOk = true;
       for (let step = 0; step < 15; step++) {
@@ -263,6 +286,12 @@ export async function renderScan(url, opts = {}) {
         }
         if ((step + 1) * 800 >= got.height) break;
       }
+      } catch (e) {
+        // a page that stops answering, or whose renderer dies: keep what was read, say so, and stop
+        if (!/STALLED|did not answer|detached|closed|Target closed|No session/i.test(e.message) && !gone) throw e;
+        notes.push(`${mode} mode: the page stopped answering after ${items.length ? `${items.length} texts were read` : 'loading'}${gone ? ' (its renderer quit)' : ''}; ${items.length ? 'the result is partial' : 'nothing could be read'}.`);
+        gone = true;
+      }
       opts.log?.(`${mode}: ${items.length} text elements, ${over.length} over images or gradients`);
       elements += items.length;
       images += over.length;
@@ -280,9 +309,11 @@ export async function renderScan(url, opts = {}) {
         const sel = `${it.sel.replace(/[{}()]/g, '')}${count > 1 ? ` (and ${count - 1} more)` : ''}${it.sampled ? ' (over an image: the worst part behind the text)' : it.image ? ' (over an image)' : ''}`;
         return `${sel} { color: ${fg}; background-color: ${hex(it.bg.slice(0, 3))}; font-size: ${it.size}px; font-weight: ${it.weight}; }`;
       }).join('\n');
-      rules.push(mode === 'dark' ? `@media (prefers-color-scheme: dark) {\n${block}\n}` : block);
+      if (block) rules.push(mode === 'dark' ? `@media (prefers-color-scheme: dark) {\n${block}\n}` : block);
+      if (gone) break;
     }
-    return { url: finalUrl, css: rules.join('\n\n'), elements, images };
+    if (!elements) throw new Error(`The page stopped answering before any text could be read: its scripts keep the browser busy.${/headless[-_]shell/i.test(bin) ? '' : ' chrome-headless-shell often copes where full Chrome does not: npx @puppeteer/browsers install chrome-headless-shell@stable, then run the scan again.'} Or check the stylesheets with \`everyhexcode check\`.`);
+    return { url: finalUrl, css: rules.join('\n\n'), elements, images, notes };
   } finally {
     try { await Promise.race([cdp?.send('Browser.close'), new Promise((r) => setTimeout(r, 1500))]); } catch { /* closing */ }
     try { cdp?.close(); } catch { /* closed */ }
