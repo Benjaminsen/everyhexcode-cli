@@ -73,6 +73,12 @@ runs:
         read -r -a FILES <<< "$INPUT_FILES"
         node $FLAGS "$CLI" check "${FILES[@]}" "${ARGS[@]}"
         code=$?
+        if [ -n "$INPUT_URL" ] && [ -z "$CHROME_PATH" ]; then
+          # chrome-headless-shell scans heavy pages that full headless Chrome can stall on
+          SHELL_OUT=$(npx -y @puppeteer/browsers install chrome-headless-shell@stable --path "$RUNNER_TEMP/ehc-chrome" 2>/dev/null | tail -1)
+          CHROME_PATH="${SHELL_OUT##* }"; export CHROME_PATH
+          [ -x "$CHROME_PATH" ] || unset CHROME_PATH
+        fi
         if [ -n "$INPUT_URL" ]; then
           SCAN=("${COMMON[@]}" --format github)
           [ -n "$INPUT_CONFIG" ] && SCAN+=(--config "$INPUT_CONFIG")

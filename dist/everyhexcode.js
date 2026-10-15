@@ -4858,6 +4858,7 @@ ${block}
 }` : block);
       if (gone) break;
     }
+    if (!elements && !notes.length) throw new Error("No visible text was found on the page. Sites that block automated browsers (nytimes.com does) or need a sign-in show nothing to read; check their stylesheets with `everyhexcode check`, or scan a page you run yourself.");
     if (!elements) throw new Error(`The page stopped answering before any text could be read: its scripts keep the browser busy.${/headless[-_]shell/i.test(bin) ? "" : " chrome-headless-shell often copes where full Chrome does not: npx @puppeteer/browsers install chrome-headless-shell@stable, then run the scan again."} Or check the stylesheets with \`everyhexcode check\`.`);
     return { url: finalUrl, css: rules.join("\n\n"), elements, images, notes };
   } finally {

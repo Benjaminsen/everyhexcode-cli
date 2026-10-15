@@ -46,7 +46,7 @@ Each fix keeps the color's hue and chroma and moves only its lightness, in OKLCH
 
 ### The rendered scan
 
-`scan` starts your installed Chrome, Chromium or Edge headless, with a temporary profile it deletes afterwards. For every visible text it takes the backgrounds under the text's own spot, composites translucent layers, and where an image or gradient is behind the text, it hides the text, photographs the box and takes the worst tenth of what is behind it. Set `CHROME_PATH` or `--chrome` if Chrome is somewhere unusual. It needs Node 22 or newer (Node 20 with `--experimental-websocket`).
+`scan` starts your installed Chrome, Chromium or Edge headless, with a temporary profile it deletes afterwards. For every visible text it takes the backgrounds under the text's own spot, composites translucent layers, and where an image or gradient is behind the text, it hides the text, photographs the box and takes the worst tenth of what is behind it. It uses chrome-headless-shell when one is installed (`npx @puppeteer/browsers install chrome-headless-shell@stable`, into the current folder or Puppeteer's cache), else your Chrome, Chromium or Edge; `CHROME_PATH` or `--chrome` picks one. Use the shell for heavy pages: in our tests full headless Chrome stalled on stripe.com, where the shell read 600 texts in 15 s. A page that stops answering gives a partial result with a note (`--timeout`, default 150 s), and a site that blocks automated browsers (nytimes.com) is reported as having nothing to read. The GitHub Action installs the shell by itself when you give it `url:`. It needs Node 22 or newer (Node 20 with `--experimental-websocket`).
 
 ## Settings: `colorcheck.json`
 
