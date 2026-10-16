@@ -3,11 +3,40 @@
   "version": "0.1.0",
   "description": "Check and fix the colors in your CSS, Tailwind config and design tokens: WCAG 2 contrast of every pair that meets, light and dark mode, color blindness, and the nearest passing colors as a diff. Runs locally and in your own CI.",
   "type": "module",
-  "bin": { "everyhexcode": "dist/everyhexcode.js" },
-  "files": ["dist/", "src/", "action.yml", "README.md", "LICENSE.md"],
-  "engines": { "node": ">=20" },
+  "bin": {
+    "everyhexcode": "dist/everyhexcode.js"
+  },
+  "files": [
+    "dist/",
+    "src/",
+    "action.yml",
+    "README.md",
+    "LICENSE.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "license": "SEE LICENSE IN LICENSE.md",
   "homepage": "https://everyhexcode.com/color-checker",
-  "keywords": ["color", "contrast", "wcag", "accessibility", "a11y", "design-tokens", "tailwind", "css", "color-blindness", "lint", "github-action"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Benjaminsen/everyhexcode-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Benjaminsen/everyhexcode-cli/issues"
+  },
+  "keywords": [
+    "color",
+    "contrast",
+    "wcag",
+    "accessibility",
+    "a11y",
+    "design-tokens",
+    "tailwind",
+    "css",
+    "color-blindness",
+    "lint",
+    "github-action"
+  ],
   "author": "Moltke Benjaminsen ApS <desk@everyhexcode.com>"
 }
