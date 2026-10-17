@@ -1,6 +1,6 @@
 {
   "name": "everyhexcode",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Check and fix the colors in your CSS, Tailwind config and design tokens: WCAG 2 contrast of every pair that meets, light and dark mode, color blindness, and the nearest passing colors as a diff. Runs locally and in your own CI.",
   "type": "module",
   "bin": {
@@ -20,10 +20,10 @@
   "homepage": "https://everyhexcode.com/color-checker",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Benjaminsen/everyhexcode-cli.git"
+    "url": "git+https://github.com/everyhexcode/cli.git"
   },
   "bugs": {
-    "url": "https://github.com/Benjaminsen/everyhexcode-cli/issues"
+    "url": "https://github.com/everyhexcode/cli/issues"
   },
   "keywords": [
     "color",

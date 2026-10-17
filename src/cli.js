@@ -10,7 +10,7 @@ import { expand, groups, skipped } from './files.js';
 import * as out from './output.js';
 import { renderScan } from './render.js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 const HELP = `everyhexcode ${VERSION}: check and fix the colors in your code
 
 Usage

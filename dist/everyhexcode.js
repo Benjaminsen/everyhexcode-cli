@@ -5210,7 +5210,7 @@ ${block}
 }
 
 // cli/src/cli.js
-var VERSION2 = "0.1.0";
+var VERSION2 = "0.1.1";
 var HELP = `everyhexcode ${VERSION2}: check and fix the colors in your code
 
 Usage

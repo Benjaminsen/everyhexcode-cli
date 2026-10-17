@@ -77,7 +77,7 @@ jobs:
       security-events: write   # only for the SARIF upload
     steps:
       - uses: actions/checkout@v4
-      - uses: Benjaminsen/everyhexcode-cli@v0
+      - uses: everyhexcode/cli@v0
         with:
           files: src/styles tokens
           sarif: colors.sarif
